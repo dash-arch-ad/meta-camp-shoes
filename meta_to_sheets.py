@@ -16,7 +16,6 @@ JST = ZoneInfo("Asia/Tokyo")
 TARGET_ACTION_CV = "offsite_conversion.fb_pixel_purchase"
 TARGET_ACTION_SALES = "purchase"
 
-# すべてのシートに impressions を追加
 METRIC_HEADERS = [
     "last_month_impressions", "last_month_reach", "last_month_spend",
     "last_month_cv_view_1d", "last_month_cv_click_7d",
@@ -110,7 +109,7 @@ def extract_metrics(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
-        "impressions": int(row.get("impressions") or 0), # Impressionsを追加
+        "impressions": int(row.get("impressions") or 0),
         "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "1d_view"),
         "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "7d_click"),
         "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, "1d_view"),
@@ -258,7 +257,6 @@ def build_audiencedetail_table(
 
     return table
 
-# --- 新規追加: audiencesegment 用のテーブル作成 ---
 def build_audiencesegment_table(
     l_acc_seg, t_acc_seg
 ) -> List[List[Any]]:
@@ -268,12 +266,12 @@ def build_audiencesegment_table(
     for k in sorted(set(l_acc_seg.keys()) | set(t_acc_seg.keys())):
         ld, td = l_acc_seg.get(k, {}), t_acc_seg.get(k, {})
         dim = td.get("dim") or ld.get("dim") or {}
-        row = ["Account Level", dim.get("audience_segment", k)]
+        # 修正箇所: user_persona_name を取得
+        row = ["Account Level", dim.get("user_persona_name", k)]
         row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
         table.append(row)
 
     return table
-
 
 def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -401,13 +399,13 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 新規追加: AUDIENCESEGMENT の処理 ---
+        # --- 修正箇所: AUDIENCESEGMENT の処理 ---
         elif kind == "AUDIENCESEGMENT":
             acc_fields = ["spend", "reach", "impressions", "actions", "action_values"]
 
-            # ブレイクダウンで "audience_segment" を指定
-            l_acc_seg = map_by_key(get_data("last", "account", acc_fields, ["audience_segment"]), lambda r: r.get("audience_segment", "Unknown"))
-            t_acc_seg = map_by_key(get_data("this", "account", acc_fields, ["audience_segment"]), lambda r: r.get("audience_segment", "Unknown"))
+            # 修正箇所: ブレイクダウンパラメータを "user_persona_name" に変更
+            l_acc_seg = map_by_key(get_data("last", "account", acc_fields, ["user_persona_name"]), lambda r: r.get("user_persona_name", "Unknown"))
+            t_acc_seg = map_by_key(get_data("this", "account", acc_fields, ["user_persona_name"]), lambda r: r.get("user_persona_name", "Unknown"))
 
             table = build_audiencesegment_table(l_acc_seg, t_acc_seg)
             sheets_write(s_id, worksheet_title, table, g_creds)
