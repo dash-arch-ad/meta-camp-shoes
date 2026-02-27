@@ -199,7 +199,6 @@ def build_daily_table(last_rows: List[Dict], this_rows: List[Dict]) -> List[List
             ])
     return table
 
-# 修正箇所: 引数を campaign レベルに変更し、列名も Campaign Name に変更
 def build_audience_table(
     l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat
 ) -> List[List[Any]]:
@@ -215,11 +214,47 @@ def build_audience_table(
             table.append(row)
 
     add_rows(l_adset, t_adset, "AdSet", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("adset_name", ""))
-    
     add_rows(l_camp, t_camp, "Campaign Total", lambda k, d: d.get("campaign_name", ""), lambda k, d: "Total")
     add_rows(l_gender, t_gender, "Gender", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("gender", ""))
     add_rows(l_age, t_age, "Age", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("age", ""))
     add_rows(l_plat, t_plat, "Platform", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("publisher_platform", ""))
+
+    return table
+
+# --- 新規追加: audiencedetail 用のテーブル作成 ---
+def build_audiencedetail_table(
+    l_adset_plat, t_adset_plat,
+    l_adset_gen_age, t_adset_gen_age,
+    l_plat_pos_dev, t_plat_pos_dev
+) -> List[List[Any]]:
+    header = ["Category", "Detail1", "Detail2", "Detail3"] + METRIC_HEADERS
+    table = [header]
+
+    def add_rows(last_m, this_m, cat_name, d1_fn, d2_fn, d3_fn):
+        for k in sorted(set(last_m.keys()) | set(this_m.keys())):
+            ld, td = last_m.get(k, {}), this_m.get(k, {})
+            dim = td.get("dim") or ld.get("dim") or {}
+            row = [cat_name, d1_fn(k, dim), d2_fn(k, dim), d3_fn(k, dim)]
+            row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
+            table.append(row)
+
+    # 1. 広告セット × プラットフォーム
+    add_rows(l_adset_plat, t_adset_plat, "AdSet x Platform", 
+             lambda k, d: d.get("adset_name", ""), 
+             lambda k, d: d.get("publisher_platform", ""), 
+             lambda k, d: "")
+             
+    # 2. 広告セット × 性別 × 年齢
+    add_rows(l_adset_gen_age, t_adset_gen_age, "AdSet x Gender x Age", 
+             lambda k, d: d.get("adset_name", ""), 
+             lambda k, d: d.get("gender", ""), 
+             lambda k, d: d.get("age", ""))
+             
+    # 3. プラットフォーム × 配置 × デバイス
+    add_rows(l_plat_pos_dev, t_plat_pos_dev, "Platform x Position x Device", 
+             lambda k, d: d.get("publisher_platform", ""), 
+             lambda k, d: d.get("platform_position", ""), 
+             lambda k, d: d.get("impression_device", ""))
 
     return table
 
@@ -306,7 +341,6 @@ def main():
             print(f"OK: wrote AD rows={len(table)-1}")
 
         elif kind == "AUDIENCE":
-            # 修正箇所: すべて account レベルから campaign レベルでの取得に変更
             adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "actions", "action_values"]
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
 
@@ -316,7 +350,6 @@ def main():
             l_camp = map_by_key(get_data("last", "campaign", camp_fields), lambda r: r.get("campaign_id"))
             t_camp = map_by_key(get_data("this", "campaign", camp_fields), lambda r: r.get("campaign_id"))
 
-            # 複数行が混ざらないよう、キーを「campaign_id + breakdown」にしてマッピング
             l_gender = map_by_key(get_data("last", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
             t_gender = map_by_key(get_data("this", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
 
@@ -329,6 +362,32 @@ def main():
             table = build_audience_table(l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
+
+        # --- 新規追加: AUDIENCEDETAIL の処理 ---
+        elif kind == "AUDIENCEDETAIL":
+            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "actions", "action_values"]
+            acc_fields = ["spend", "reach", "actions", "action_values"]
+
+            # 1. 広告セット × プラットフォーム
+            l_adset_plat = map_by_key(get_data("last", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
+            t_adset_plat = map_by_key(get_data("this", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
+
+            # 2. 広告セット × 性別 × 年齢
+            l_adset_gen_age = map_by_key(get_data("last", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
+            t_adset_gen_age = map_by_key(get_data("this", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
+
+            # 3. プラットフォーム × 配置 × デバイス (アカウント全体)
+            # ユーザー要望の3列出力に合わせるため publisher_platform, platform_position, impression_device の3つを使用
+            l_plat_pos_dev = map_by_key(get_data("last", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
+            t_plat_pos_dev = map_by_key(get_data("this", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
+
+            table = build_audiencedetail_table(
+                l_adset_plat, t_adset_plat,
+                l_adset_gen_age, t_adset_gen_age,
+                l_plat_pos_dev, t_plat_pos_dev
+            )
+            sheets_write(s_id, worksheet_title, table, g_creds)
+            print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
         else:
             print(f"SKIP: sheet_kind '{kind}' is not implemented yet")
