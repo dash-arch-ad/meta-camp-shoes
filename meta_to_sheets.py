@@ -27,6 +27,14 @@ METRIC_HEADERS = [
     "this_month_cpa_click_7d", "this_month_roas_click_7d",
 ]
 
+# auseシート専用のヘッダー（Imp, Spend, CVのみ）
+AUSE_METRIC_HEADERS = [
+    "last_month_impressions", "last_month_spend",
+    "last_month_cv_view_1d", "last_month_cv_click_7d",
+    "this_month_impressions", "this_month_spend",
+    "this_month_cv_view_1d", "this_month_cv_click_7d",
+]
+
 def _act_id_normalize(m_act_id: str) -> str:
     s = str(m_act_id).strip()
     return s[4:] if s.startswith("act_") else s
@@ -151,6 +159,24 @@ def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
         fmt(t_cpa), fmt(t_roas),
     ]
 
+# auseシート専用の行作成関数
+def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
+    def fmt(x: Any) -> Any:
+        if x is None: return ""
+        try: return round(float(x), 6)
+        except: return ""
+
+    l_imp, l_spend = ld.get("impressions", 0), ld.get("spend", 0.0)
+    l_cv_1d, l_cv_7d = ld.get("cv_1d", 0.0), ld.get("cv_7d", 0.0)
+
+    t_imp, t_spend = td.get("impressions", 0), td.get("spend", 0.0)
+    t_cv_1d, t_cv_7d = td.get("cv_1d", 0.0), td.get("cv_7d", 0.0)
+
+    return [
+        fmt(l_imp), fmt(l_spend), fmt(l_cv_1d), fmt(l_cv_7d),
+        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d), fmt(t_cv_7d)
+    ]
+
 def build_campaign_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
     header = ["campaign_id", "campaign_name"] + METRIC_HEADERS
     table = [header]
@@ -257,21 +283,49 @@ def build_audiencedetail_table(
 
     return table
 
-def build_audiencesegment_table(
-    l_acc_seg, t_acc_seg
-) -> List[List[Any]]:
-    header = ["Category", "Audience Segment"] + METRIC_HEADERS
+def build_audiencesegment_table(l_camp_seg, t_camp_seg) -> List[List[Any]]:
+    # 修正: ause専用のヘッダーを使用
+    header = ["Category", "Campaign Name", "Audience Segment"] + AUSE_METRIC_HEADERS
     table = [header]
 
-    for k in sorted(set(l_acc_seg.keys()) | set(t_acc_seg.keys())):
-        ld, td = l_acc_seg.get(k, {}), t_acc_seg.get(k, {})
+    seg_totals = {"last": {}, "this": {}}
+
+    def add_to_totals(period, persona, metrics):
+        if persona not in seg_totals[period]:
+            seg_totals[period][persona] = {
+                "impressions": 0, "spend": 0.0,
+                "cv_1d": 0.0, "cv_7d": 0.0
+            }
+        t = seg_totals[period][persona]
+        t["impressions"] += metrics.get("impressions", 0)
+        t["spend"] += metrics.get("spend", 0.0)
+        t["cv_1d"] += metrics.get("cv_1d", 0.0)
+        t["cv_7d"] += metrics.get("cv_7d", 0.0)
+
+    for k in sorted(set(l_camp_seg.keys()) | set(t_camp_seg.keys())):
+        ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
         dim = td.get("dim") or ld.get("dim") or {}
-        # 修正箇所: user_persona_name を取得
-        row = ["Account Level", dim.get("user_persona_name", k)]
-        row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
+        persona = dim.get("user_persona_name", "Unknown")
+
+        if ld: add_to_totals("last", persona, ld.get("metrics", {}))
+        if td: add_to_totals("this", persona, td.get("metrics", {}))
+
+        row = ["Campaign", dim.get("campaign_name", ""), persona]
+        # 修正: ause専用の行作成関数を使用
+        row.extend(compute_ause_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
+        table.append(row)
+
+    all_personas = sorted(set(seg_totals["last"].keys()) | set(seg_totals["this"].keys()))
+    for p in all_personas:
+        ld_metrics = seg_totals["last"].get(p, {})
+        td_metrics = seg_totals["this"].get(p, {})
+        row = ["Total", "All Campaigns Sum", p]
+        # 修正: ause専用の行作成関数を使用
+        row.extend(compute_ause_metric_row(ld_metrics, td_metrics))
         table.append(row)
 
     return table
+
 
 def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -289,6 +343,7 @@ def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id, range=f"{worksheet_title}!A1", valueInputOption="USER_ENTERED", body={"values": values_2d}
     ).execute()
+
 
 def main():
     raw = os.environ.get("APP_SECRET_JSON")
@@ -399,15 +454,13 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 修正箇所: AUDIENCESEGMENT の処理 ---
         elif kind == "AUDIENCESEGMENT":
-            acc_fields = ["spend", "reach", "impressions", "actions", "action_values"]
+            camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
-            # 修正箇所: ブレイクダウンパラメータを "user_persona_name" に変更
-            l_acc_seg = map_by_key(get_data("last", "account", acc_fields, ["user_persona_name"]), lambda r: r.get("user_persona_name", "Unknown"))
-            t_acc_seg = map_by_key(get_data("this", "account", acc_fields, ["user_persona_name"]), lambda r: r.get("user_persona_name", "Unknown"))
+            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, ["user_persona_name"]), lambda r: f"{r.get('campaign_id')}_{r.get('user_persona_name', 'Unknown')}")
+            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, ["user_persona_name"]), lambda r: f"{r.get('campaign_id')}_{r.get('user_persona_name', 'Unknown')}")
 
-            table = build_audiencesegment_table(l_acc_seg, t_acc_seg)
+            table = build_audiencesegment_table(l_camp_seg, t_camp_seg)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1}")
 
