@@ -13,16 +13,11 @@ from zoneinfo import ZoneInfo
 GRAPH_BASE = "https://graph.facebook.com"
 JST = ZoneInfo("Asia/Tokyo")
 
-# ---- Meta: CV/ROAS のデフォルト定義（必要なら調整）----
-DEFAULT_CV_ACTION_TYPES = [
-    "lead",
-    "omni_lead",
-    "offsite_conversion.fb_pixel_lead",
-    "offsite_conversion.lead",
-    "onsite_conversion.lead_grouped",
-]
 
-DEFAULT_VALUE_ACTION_TYPES_FOR_ROAS = [
+# Ads Managerの「Purchase」がアカウント/設定によって複数action_typeに分かれることがあるため、
+# 実務でズレにくいように代表例を広めに含めます。
+# もし「purchaseだけ」に絞りたいなら、["purchase"] のみにしてください。
+DEFAULT_PURCHASE_ACTION_TYPES = [
     "purchase",
     "omni_purchase",
     "offsite_conversion.purchase",
@@ -37,10 +32,10 @@ def _act_id_normalize(m_act_id: str) -> str:
 
 def this_month_range_to_yesterday_jst() -> Optional[Tuple[str, str]]:
     """
-    Returns (since, until) as YYYY-MM-DD in JST:
-      since = first day of this month
-      until = yesterday
-    If today is the 1st, returns None (range would be invalid).
+    JST基準で:
+      since = 当月1日
+      until = 前日
+    todayが1日の場合は範囲が作れないのでNone
     """
     today = datetime.now(JST).date()
     yesterday = today - timedelta(days=1)
@@ -57,6 +52,7 @@ def meta_get_insights(
     fields: List[str],
     date_preset: Optional[str] = None,
     time_range: Optional[Dict[str, str]] = None,
+    action_attribution_windows: Optional[List[str]] = None,
     level: str = "campaign",
     limit: int = 500,
     max_pages: int = 50,
@@ -66,6 +62,9 @@ def meta_get_insights(
       - date_preset="last_month" etc
     Or:
       - time_range={"since":"YYYY-MM-DD","until":"YYYY-MM-DD"}
+
+    For attribution-specific actions/action_values:
+      - action_attribution_windows=["1d_view"] or ["7d_click"] etc
     """
     if (date_preset is None) == (time_range is None):
         raise ValueError("Specify exactly one of date_preset or time_range")
@@ -83,8 +82,12 @@ def meta_get_insights(
     if date_preset is not None:
         params["date_preset"] = date_preset
     else:
-        # Graph API expects time_range as an object-like parameter; safest is JSON string.
+        # time_range はJSON文字列で渡すのが安定
         params["time_range"] = json.dumps(time_range, separators=(",", ":"))
+
+    if action_attribution_windows:
+        # attribution windows もJSON配列で渡すのが安定
+        params["action_attribution_windows"] = json.dumps(action_attribution_windows, separators=(",", ":"))
 
     out: List[Dict[str, Any]] = []
     pages = 0
@@ -106,7 +109,7 @@ def meta_get_insights(
             break
 
         url = next_url
-        params = None  # next URL already has query params
+        params = None  # next URL already includes query params
         time.sleep(0.2)
 
     return out
@@ -126,78 +129,83 @@ def sum_action_list(actions: Optional[List[Dict[str, str]]], wanted: List[str]) 
     return total
 
 
-def pick_purchase_roas(purchase_roas: Optional[List[Dict[str, str]]]) -> Optional[float]:
-    if not purchase_roas:
-        return None
-    total = 0.0
-    found = False
-    for x in purchase_roas:
-        try:
-            total += float(x.get("value", 0))
-            found = True
-        except (TypeError, ValueError):
-            pass
-    return total if found else None
+def rows_to_purchase_metrics(
+    rows: List[Dict[str, Any]],
+    purchase_action_types: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Returns dict keyed by campaign_id:
+      {
+        cid: {
+          campaign_id, campaign_name,
+          spend,
+          purchase_cv,   # Purchase count
+          purchase_value # Purchase value (revenue)
+        }
+      }
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+
+    for row in rows:
+        cid = row.get("campaign_id")
+        if not cid:
+            continue
+
+        name = row.get("campaign_name", "")
+        spend = float(row.get("spend") or 0.0)
+
+        actions = row.get("actions")          # counts
+        action_values = row.get("action_values")  # values
+
+        purchase_cv = sum_action_list(actions, purchase_action_types)
+        purchase_value = sum_action_list(action_values, purchase_action_types)
+
+        out[cid] = {
+            "campaign_id": cid,
+            "campaign_name": name,
+            "spend": spend,
+            "purchase_cv": purchase_cv,
+            "purchase_value": purchase_value,
+        }
+
+    return out
 
 
-def build_monthly_table(
-    last_rows: List[Dict[str, Any]],
-    this_rows: List[Dict[str, Any]],
-    cv_action_types: List[str],
-    roas_value_action_types: List[str],
+def build_monthly_table_purchase_attr(
+    last_view: Dict[str, Dict[str, Any]],
+    last_click: Dict[str, Dict[str, Any]],
+    this_view: Dict[str, Dict[str, Any]],
+    this_click: Dict[str, Dict[str, Any]],
 ) -> List[List[Any]]:
-    def to_metrics(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-        out: Dict[str, Dict[str, Any]] = {}
-        for row in rows:
-            cid = row.get("campaign_id")
-            if not cid:
-                continue
-
-            name = row.get("campaign_name", "")
-            spend = float(row.get("spend") or 0.0)
-
-            actions = row.get("actions")
-            action_values = row.get("action_values")
-            purchase_roas = row.get("purchase_roas")
-
-            cv = sum_action_list(actions, cv_action_types)
-            cpa = (spend / cv) if cv > 0 else None
-
-            roas = pick_purchase_roas(purchase_roas)
-            if roas is None:
-                value = sum_action_list(action_values, roas_value_action_types)
-                roas = (value / spend) if spend > 0 else None
-
-            out[cid] = {
-                "campaign_id": cid,
-                "campaign_name": name,
-                "spend": spend,
-                "cv": cv,
-                "cpa": cpa,
-                "roas": roas,
-            }
-        return out
-
-    last = to_metrics(last_rows)
-    this_ = to_metrics(this_rows)
-
-    all_ids = sorted(set(last.keys()) | set(this_.keys()))
+    """
+    出力列:
+      - 先月（フル月）: CV(view1d), CV(click7d), 売上(view1d), 売上(click7d), spend, CPA/ROAS(click7d)
+      - 今月（当月1日〜前日）: 同上
+    """
+    all_ids = sorted(set(last_view.keys()) | set(last_click.keys()) | set(this_view.keys()) | set(this_click.keys()))
 
     header = [
         "campaign_id",
         "campaign_name",
-        "last_month_cv",
-        "last_month_cpa",
-        "last_month_roas",
-        "last_month_spend",
-        "this_month_cv",
-        "this_month_cpa",
-        "this_month_roas",
-        "this_month_spend",
-    ]
-    table: List[List[Any]] = [header]
 
-    def fmt_num(x: Any) -> Any:
+        "last_month_cv_view_1d",
+        "last_month_cv_click_7d",
+        "last_month_sales_view_1d",
+        "last_month_sales_click_7d",
+        "last_month_spend",
+        "last_month_cpa_click_7d",
+        "last_month_roas_click_7d",
+
+        "this_month_cv_view_1d",
+        "this_month_cv_click_7d",
+        "this_month_sales_view_1d",
+        "this_month_sales_click_7d",
+        "this_month_spend",
+        "this_month_cpa_click_7d",
+        "this_month_roas_click_7d",
+    ]
+
+    def fmt(x: Any) -> Any:
         if x is None:
             return ""
         try:
@@ -205,39 +213,58 @@ def build_monthly_table(
         except (TypeError, ValueError):
             return ""
 
+    table: List[List[Any]] = [header]
+
     for cid in all_ids:
-        lm = last.get(cid)
-        tm = this_.get(cid)
-        name = ((tm or {}).get("campaign_name") or (lm or {}).get("campaign_name") or "")
+        # campaign_name はどれかにあればそれを採用
+        name = (
+            (this_click.get(cid) or {}).get("campaign_name")
+            or (this_view.get(cid) or {}).get("campaign_name")
+            or (last_click.get(cid) or {}).get("campaign_name")
+            or (last_view.get(cid) or {}).get("campaign_name")
+            or ""
+        )
 
-        # その期間に存在しないキャンペーンは「空」にして誤解を減らす
-        if lm is None:
-            lm_cv = lm_cpa = lm_roas = lm_spend = ""
-        else:
-            lm_cv = fmt_num(lm.get("cv"))
-            lm_cpa = fmt_num(lm.get("cpa"))
-            lm_roas = fmt_num(lm.get("roas"))
-            lm_spend = fmt_num(lm.get("spend"))
+        # spend は attribution window で変わらないはずなので click側を優先、なければview側
+        lm_spend = (last_click.get(cid) or last_view.get(cid) or {}).get("spend")
+        tm_spend = (this_click.get(cid) or this_view.get(cid) or {}).get("spend")
 
-        if tm is None:
-            tm_cv = tm_cpa = tm_roas = tm_spend = ""
-        else:
-            tm_cv = fmt_num(tm.get("cv"))
-            tm_cpa = fmt_num(tm.get("cpa"))
-            tm_roas = fmt_num(tm.get("roas"))
-            tm_spend = fmt_num(tm.get("spend"))
+        lm_cv_view = (last_view.get(cid) or {}).get("purchase_cv")
+        lm_cv_click = (last_click.get(cid) or {}).get("purchase_cv")
+        lm_sales_view = (last_view.get(cid) or {}).get("purchase_value")
+        lm_sales_click = (last_click.get(cid) or {}).get("purchase_value")
+
+        tm_cv_view = (this_view.get(cid) or {}).get("purchase_cv")
+        tm_cv_click = (this_click.get(cid) or {}).get("purchase_cv")
+        tm_sales_view = (this_view.get(cid) or {}).get("purchase_value")
+        tm_sales_click = (this_click.get(cid) or {}).get("purchase_value")
+
+        # CPA/ROAS は click7d を基準に固定（要件の「Click:7days」列と整合）
+        lm_cpa_click = (float(lm_spend) / float(lm_cv_click)) if (lm_spend is not None and lm_cv_click and lm_cv_click > 0) else None
+        lm_roas_click = (float(lm_sales_click) / float(lm_spend)) if (lm_spend and lm_spend > 0 and lm_sales_click is not None) else None
+
+        tm_cpa_click = (float(tm_spend) / float(tm_cv_click)) if (tm_spend is not None and tm_cv_click and tm_cv_click > 0) else None
+        tm_roas_click = (float(tm_sales_click) / float(tm_spend)) if (tm_spend and tm_spend > 0 and tm_sales_click is not None) else None
 
         table.append([
             cid,
             name,
-            lm_cv,
-            lm_cpa,
-            lm_roas,
-            lm_spend,
-            tm_cv,
-            tm_cpa,
-            tm_roas,
-            tm_spend,
+
+            fmt(lm_cv_view),
+            fmt(lm_cv_click),
+            fmt(lm_sales_view),
+            fmt(lm_sales_click),
+            fmt(lm_spend),
+            fmt(lm_cpa_click),
+            fmt(lm_roas_click),
+
+            fmt(tm_cv_view),
+            fmt(tm_cv_click),
+            fmt(tm_sales_view),
+            fmt(tm_sales_click),
+            fmt(tm_spend),
+            fmt(tm_cpa_click),
+            fmt(tm_roas_click),
         ])
 
     return table
@@ -283,50 +310,75 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
 
-    cv_action_types = cfg.get("cv_action_types", DEFAULT_CV_ACTION_TYPES)
-    roas_value_action_types = cfg.get("roas_value_action_types", DEFAULT_VALUE_ACTION_TYPES_FOR_ROAS)
     api_version = cfg.get("m_api_version", "v25.0")
 
+    # purchase action types（secretsで上書き可能にしておく）
+    purchase_action_types = cfg.get("purchase_action_types", DEFAULT_PURCHASE_ACTION_TYPES)
+
+    # campaign-level fields
     fields = [
         "campaign_id",
         "campaign_name",
         "spend",
         "actions",
         "action_values",
-        "purchase_roas",
-        # "date_start", "date_stop",  # デバッグしたいなら一時的に足す
     ]
 
     for sheet_kind, worksheet_title in sheets_map.items():
         kind = str(sheet_kind).strip().upper()
 
         if kind == "MONTHLY":
-            # 先月はそのまま full-month
-            last_rows = meta_get_insights(
+            # --- 先月（フル月） ---
+            last_rows_view = meta_get_insights(
                 api_version=api_version,
                 m_token=m_token,
                 m_act_id=m_act_id,
                 fields=fields,
                 date_preset="last_month",
+                action_attribution_windows=["1d_view"],
+            )
+            last_rows_click = meta_get_insights(
+                api_version=api_version,
+                m_token=m_token,
+                m_act_id=m_act_id,
+                fields=fields,
+                date_preset="last_month",
+                action_attribution_windows=["7d_click"],
             )
 
-            # 今月は「当月1日〜前日」に固定（JST基準）
+            last_view = rows_to_purchase_metrics(last_rows_view, purchase_action_types)
+            last_click = rows_to_purchase_metrics(last_rows_click, purchase_action_types)
+
+            # --- 今月（当月1日〜前日、JST計算） ---
             rng = this_month_range_to_yesterday_jst()
             if rng is None:
-                this_rows = []
+                this_view = {}
+                this_click = {}
             else:
                 since, until = rng
-                this_rows = meta_get_insights(
+                this_rows_view = meta_get_insights(
                     api_version=api_version,
                     m_token=m_token,
                     m_act_id=m_act_id,
                     fields=fields,
                     time_range={"since": since, "until": until},
+                    action_attribution_windows=["1d_view"],
+                )
+                this_rows_click = meta_get_insights(
+                    api_version=api_version,
+                    m_token=m_token,
+                    m_act_id=m_act_id,
+                    fields=fields,
+                    time_range={"since": since, "until": until},
+                    action_attribution_windows=["7d_click"],
                 )
 
-            table = build_monthly_table(last_rows, this_rows, cv_action_types, roas_value_action_types)
+                this_view = rows_to_purchase_metrics(this_rows_view, purchase_action_types)
+                this_click = rows_to_purchase_metrics(this_rows_click, purchase_action_types)
+
+            table = build_monthly_table_purchase_attr(last_view, last_click, this_view, this_click)
             sheets_write(s_id, worksheet_title, table, g_creds)
-            print(f"OK: wrote MONTHLY to sheet '{worksheet_title}' rows={len(table)-1}")
+            print(f"OK: wrote MONTHLY(purchase attr) to sheet '{worksheet_title}' rows={len(table)-1}")
 
         else:
             print(f"SKIP: sheet_kind '{kind}' is not implemented yet (worksheet='{worksheet_title}')")
