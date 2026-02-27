@@ -305,7 +305,7 @@ def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[L
     for k in sorted(set(l_camp_seg.keys()) | set(t_camp_seg.keys())):
         ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
         dim = td.get("dim") or ld.get("dim") or {}
-        persona = dim.get(breakdown_key, "Unknown")
+        persona = dim.get(breakdown_key, "__MISSING__")
 
         if ld: add_to_totals("last", persona, ld.get("metrics", {}))
         if td: add_to_totals("this", persona, td.get("metrics", {}))
@@ -454,31 +454,117 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 修正: auseシート取得時のみ "default" アトリビューションを渡す ---
+        # --- 修正: auseシート取得時のみ breakdow候補を検証し、actionsログで原因特定できるようにする ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
-            
-            # ログの許可リストに基づき "default" を指定
+
+            # ログの許可リストに基づき "default" を指定（維持）
             seg_attr = ["default"]
-            target_bd = "audience_segment"
-            
-            try:
-                get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
-            except RuntimeError as e:
-                if "user_persona_name" in str(e) or "audience_segment" in str(e):
-                    target_bd = "user_persona_name"
+
+            # 公式/互換の候補（user_segment_key を最優先）
+            breakdown_candidates = ["user_segment_key", "audience_segment", "user_persona_name"]
+
+            def ause_debug(tag: str, rows: List[Dict[str, Any]], bd: str) -> None:
+                print(f"[AUSE DEBUG] {tag}: rows={len(rows)} bd={bd}")
+                if not rows:
+                    return
+
+                sample = rows[0]
+                print(f"[AUSE DEBUG] {tag}: sample keys={sorted(sample.keys())}")
+                print(f"[AUSE DEBUG] {tag}: sample {bd}={sample.get(bd)}")
+
+                counts: Dict[str, int] = {}
+                missing = 0
+                non_empty = 0
+                for r in rows:
+                    if bd not in r:
+                        missing += 1
+                        v = "__MISSING__"
+                    else:
+                        v = r.get(bd)
+                        if v not in (None, ""):
+                            non_empty += 1
+                    counts[str(v)] = counts.get(str(v), 0) + 1
+
+                top10 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                print(f"[AUSE DEBUG] {tag}: bd counts top10={top10} missing={missing}/{len(rows)} non_empty={non_empty}/{len(rows)}")
+
+                acts = sample.get("actions")
+                if isinstance(acts, list):
+                    atypes = []
+                    for a in acts:
+                        if isinstance(a, dict):
+                            atypes.append(a.get("action_type"))
+                    print(f"[AUSE DEBUG] {tag}: actions types sample={atypes[:30]}")
+
+                    for target in [TARGET_ACTION_CV, TARGET_ACTION_SALES]:
+                        found = None
+                        for a in acts:
+                            if isinstance(a, dict) and a.get("action_type") == target:
+                                found = a
+                                break
+                        if found:
+                            print(
+                                f"[AUSE DEBUG] {tag}: action '{target}' keys={sorted(found.keys())} "
+                                f"value={found.get('value')} 1d_view={found.get('1d_view')} 7d_click={found.get('7d_click')}"
+                            )
+                        else:
+                            print(f"[AUSE DEBUG] {tag}: action '{target}' NOT FOUND in sample actions")
                 else:
-                    raise e
+                    print(f"[AUSE DEBUG] {tag}: actions type={type(acts)}")
 
-            l_rows = get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
-            t_rows = get_data("this", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
+            def has_real_breakdown(rows: List[Dict[str, Any]], bd: str) -> bool:
+                if not rows:
+                    return False
+                present = 0
+                non_empty = 0
+                for r in rows:
+                    if bd in r:
+                        present += 1
+                        if r.get(bd) not in (None, ""):
+                            non_empty += 1
+                return present > 0 and non_empty > 0
 
-            l_camp_seg = map_by_key(l_rows, lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}", is_ause=True)
-            t_camp_seg = map_by_key(t_rows, lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}", is_ause=True)
+            chosen_bd = None
+            l_rows: List[Dict[str, Any]] = []
+            t_rows: List[Dict[str, Any]] = []
 
-            table = build_audiencesegment_table(l_camp_seg, t_camp_seg, target_bd)
+            for bd in breakdown_candidates:
+                try:
+                    l_try = get_data("last", "campaign", camp_fields, [bd], attr_windows=seg_attr)
+                    t_try = get_data("this", "campaign", camp_fields, [bd], attr_windows=seg_attr)
+                except RuntimeError as e:
+                    print(f"[AUSE DEBUG] breakdown '{bd}' API error: {e}")
+                    continue
+
+                ause_debug("last", l_try, bd)
+                ause_debug("this", t_try, bd)
+
+                if has_real_breakdown(l_try, bd) or has_real_breakdown(t_try, bd):
+                    chosen_bd = bd
+                    l_rows, t_rows = l_try, t_try
+                    break
+
+            if not chosen_bd:
+                chosen_bd = breakdown_candidates[0]
+                l_rows = get_data("last", "campaign", camp_fields, [chosen_bd], attr_windows=seg_attr)
+                t_rows = get_data("this", "campaign", camp_fields, [chosen_bd], attr_windows=seg_attr)
+                ause_debug("last(fallback)", l_rows, chosen_bd)
+                ause_debug("this(fallback)", t_rows, chosen_bd)
+
+            def ause_map_key(r: Dict[str, Any]) -> str:
+                seg = r.get(chosen_bd)
+                if seg in (None, ""):
+                    seg = "__MISSING__"
+                cid = r.get("campaign_id") or "__NO_CAMP__"
+                return f"{cid}_{seg}"
+
+            l_camp_seg = map_by_key(l_rows, ause_map_key, is_ause=True)
+            t_camp_seg = map_by_key(t_rows, ause_map_key, is_ause=True)
+
+            table = build_audiencesegment_table(l_camp_seg, t_camp_seg, chosen_bd)
             sheets_write(s_id, worksheet_title, table, g_creds)
-            print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1}")
+            print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1} (bd={chosen_bd})")
 
         else:
             print(f"SKIP: sheet_kind '{kind}' is not implemented yet")
