@@ -115,7 +115,6 @@ def meta_get_insights(
     return out
 
 
-# 修正ポイント1: actionsの型を Dict[str, Any] に変更し、引数 attr_window を追加
 def sum_action_list(actions: Optional[List[Dict[str, Any]]], wanted: List[str], attr_window: str = "value") -> float:
     if not actions:
         return 0.0
@@ -131,7 +130,6 @@ def sum_action_list(actions: Optional[List[Dict[str, Any]]], wanted: List[str], 
     return total
 
 
-# 修正ポイント2: 引数 attr_window を受け取り、sum_action_list に渡すように変更
 def rows_to_purchase_metrics(
     rows: List[Dict[str, Any]],
     purchase_action_types: List[str],
@@ -142,7 +140,7 @@ def rows_to_purchase_metrics(
       {
         cid: {
           campaign_id, campaign_name,
-          spend,
+          spend, reach,
           purchase_cv,   # Purchase count
           purchase_value # Purchase value (revenue)
         }
@@ -157,6 +155,9 @@ def rows_to_purchase_metrics(
 
         name = row.get("campaign_name", "")
         spend = float(row.get("spend") or 0.0)
+        
+        # 修正: reachを取得 (APIからは文字列で返ってくるためfloat/int変換用に取得)
+        reach = int(row.get("reach") or 0)
 
         actions = row.get("actions")          # counts
         action_values = row.get("action_values")  # values
@@ -169,6 +170,7 @@ def rows_to_purchase_metrics(
             "campaign_id": cid,
             "campaign_name": name,
             "spend": spend,
+            "reach": reach, # 修正: 辞書に保存
             "purchase_cv": purchase_cv,
             "purchase_value": purchase_value,
         }
@@ -184,11 +186,12 @@ def build_monthly_table_purchase_attr(
 ) -> List[List[Any]]:
     """
     出力列:
-      - 先月（フル月）: CV(view1d), CV(click7d), 売上(view1d), 売上(click7d), spend, CPA/ROAS(click7d)
+      - 先月（フル月）: CV(view1d), CV(click7d), 売上(view1d), 売上(click7d), spend, reach, CPA/ROAS(click7d)
       - 今月（当月1日〜前日）: 同上
     """
     all_ids = sorted(set(last_view.keys()) | set(last_click.keys()) | set(this_view.keys()) | set(this_click.keys()))
 
+    # 修正: ヘッダーに reach を追加
     header = [
         "campaign_id",
         "campaign_name",
@@ -198,6 +201,7 @@ def build_monthly_table_purchase_attr(
         "last_month_sales_view_1d",
         "last_month_sales_click_7d",
         "last_month_spend",
+        "last_month_reach",
         "last_month_cpa_click_7d",
         "last_month_roas_click_7d",
 
@@ -206,6 +210,7 @@ def build_monthly_table_purchase_attr(
         "this_month_sales_view_1d",
         "this_month_sales_click_7d",
         "this_month_spend",
+        "this_month_reach",
         "this_month_cpa_click_7d",
         "this_month_roas_click_7d",
     ]
@@ -230,9 +235,11 @@ def build_monthly_table_purchase_attr(
             or ""
         )
 
-        # spend は attribution window で変わらないはずなので click側を優先、なければview側
+        # spend, reach は attribution window で変わらないはずなので click側を優先、なければview側
         lm_spend = (last_click.get(cid) or last_view.get(cid) or {}).get("spend")
+        lm_reach = (last_click.get(cid) or last_view.get(cid) or {}).get("reach")
         tm_spend = (this_click.get(cid) or this_view.get(cid) or {}).get("spend")
+        tm_reach = (this_click.get(cid) or this_view.get(cid) or {}).get("reach")
 
         lm_cv_view = (last_view.get(cid) or {}).get("purchase_cv")
         lm_cv_click = (last_click.get(cid) or {}).get("purchase_cv")
@@ -251,6 +258,7 @@ def build_monthly_table_purchase_attr(
         tm_cpa_click = (float(tm_spend) / float(tm_cv_click)) if (tm_spend is not None and tm_cv_click and tm_cv_click > 0) else None
         tm_roas_click = (float(tm_sales_click) / float(tm_spend)) if (tm_spend and tm_spend > 0 and tm_sales_click is not None) else None
 
+        # 修正: 配列出力に reach を追加
         table.append([
             cid,
             name,
@@ -260,6 +268,7 @@ def build_monthly_table_purchase_attr(
             fmt(lm_sales_view),
             fmt(lm_sales_click),
             fmt(lm_spend),
+            fmt(lm_reach),
             fmt(lm_cpa_click),
             fmt(lm_roas_click),
 
@@ -268,6 +277,7 @@ def build_monthly_table_purchase_attr(
             fmt(tm_sales_view),
             fmt(tm_sales_click),
             fmt(tm_spend),
+            fmt(tm_reach),
             fmt(tm_cpa_click),
             fmt(tm_roas_click),
         ])
@@ -315,17 +325,17 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
 
-    # 修正ポイント3: 現在のMeta APIのバージョンに合わせてデフォルトを少し調整（v25.0でも動作するならそのままでOK）
     api_version = cfg.get("m_api_version", "v20.0")
 
     # purchase action types（secretsで上書き可能にしておく）
     purchase_action_types = cfg.get("purchase_action_types", DEFAULT_PURCHASE_ACTION_TYPES)
 
-    # campaign-level fields
+    # 修正: campaign-level fields に "reach" を追加
     fields = [
         "campaign_id",
         "campaign_name",
         "spend",
+        "reach", 
         "actions",
         "action_values",
     ]
@@ -352,7 +362,6 @@ def main():
                 action_attribution_windows=["7d_click"],
             )
 
-            # 修正ポイント4: 関数呼び出し時にアトリビューションのキーを指定
             last_view = rows_to_purchase_metrics(last_rows_view, purchase_action_types, "1d_view")
             last_click = rows_to_purchase_metrics(last_rows_click, purchase_action_types, "7d_click")
 
@@ -380,7 +389,6 @@ def main():
                     action_attribution_windows=["7d_click"],
                 )
 
-                # 修正ポイント4: 関数呼び出し時にアトリビューションのキーを指定
                 this_view = rows_to_purchase_metrics(this_rows_view, purchase_action_types, "1d_view")
                 this_click = rows_to_purchase_metrics(this_rows_click, purchase_action_types, "7d_click")
 
