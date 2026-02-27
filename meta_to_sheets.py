@@ -109,27 +109,31 @@ def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str
     if not actions: return 0.0
     for a in actions:
         if a.get("action_type") == target_action:
-            try: return float(a.get(attr_window, 0))
+            # 修正: 'action_report_default_custom' 指定時は 'value' キーに数値が入るため柔軟に取得
+            try: return float(a.get(attr_window, a.get('value', 0)))
             except: return 0.0
     return 0.0
 
-def extract_metrics(row: Dict[str, Any]) -> Dict[str, Any]:
+def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
+    # セグメントデータ取得時は attr_window_cv を 'value' などに読み替えて抽出
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
         "impressions": int(row.get("impressions") or 0),
-        "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "1d_view"),
-        "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "7d_click"),
-        "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, "1d_view"),
-        "sales_7d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, "7d_click"),
+        "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv),
+        "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv_click),
+        "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv),
+        "sales_7d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv_click),
     }
 
-def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any]) -> Dict[str, Dict]:
+def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any], is_ause: bool = False) -> Dict[str, Dict]:
     res = {}
     for r in rows:
         k = key_func(r)
         if not k: continue
-        res[k] = {"dim": r, "metrics": extract_metrics(r)}
+        # auseシートの場合は抽出時のアトリビューションキーを 'value' に向ける
+        metrics = extract_metrics(r, "value", "value") if is_ause else extract_metrics(r)
+        res[k] = {"dim": r, "metrics": metrics}
     return res
 
 def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
@@ -352,6 +356,7 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
     
+    # トークンに合わせv24.0に設定
     api_version = cfg.get("m_api_version", "v24.0")
 
     rng = this_month_range_to_yesterday_jst()
@@ -452,22 +457,29 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
+        # --- 修正: auseシート取得時のみ専用のアトリビューションフラグを渡す ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
-
+            
+            # 管理画面の「合算」を分解するための専用パラメータ
+            seg_attr = ["action_report_default_custom"]
             target_bd = "audience_segment"
+            
             try:
-                # attr_windows を指定せず、None でリクエスト
-                get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None)
+                # 判定用リクエスト
+                get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
             except RuntimeError as e:
                 if "user_persona_name" in str(e) or "audience_segment" in str(e):
                     target_bd = "user_persona_name"
                 else:
                     raise e
 
-            # attr_windows=None を指定してデータを取得
-            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
-            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
+            # マッピング時に is_ause=True を渡し、抽出キーを 'value' に強制
+            l_rows = get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
+            t_rows = get_data("this", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
+
+            l_camp_seg = map_by_key(l_rows, lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}", is_ause=True)
+            t_camp_seg = map_by_key(t_rows, lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}", is_ause=True)
 
             table = build_audiencesegment_table(l_camp_seg, t_camp_seg, target_bd)
             sheets_write(s_id, worksheet_title, table, g_creds)
