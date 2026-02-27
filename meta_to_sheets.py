@@ -16,14 +16,15 @@ JST = ZoneInfo("Asia/Tokyo")
 TARGET_ACTION_CV = "offsite_conversion.fb_pixel_purchase"
 TARGET_ACTION_SALES = "purchase"
 
+# すべてのシートに impressions を追加
 METRIC_HEADERS = [
+    "last_month_impressions", "last_month_reach", "last_month_spend",
     "last_month_cv_view_1d", "last_month_cv_click_7d",
     "last_month_sales_view_1d", "last_month_sales_click_7d",
-    "last_month_spend", "last_month_reach",
     "last_month_cpa_click_7d", "last_month_roas_click_7d",
+    "this_month_impressions", "this_month_reach", "this_month_spend",
     "this_month_cv_view_1d", "this_month_cv_click_7d",
     "this_month_sales_view_1d", "this_month_sales_click_7d",
-    "this_month_spend", "this_month_reach",
     "this_month_cpa_click_7d", "this_month_roas_click_7d",
 ]
 
@@ -109,6 +110,7 @@ def extract_metrics(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
+        "impressions": int(row.get("impressions") or 0), # Impressionsを追加
         "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "1d_view"),
         "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, "7d_click"),
         "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, "1d_view"),
@@ -129,23 +131,25 @@ def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
         try: return round(float(x), 6)
         except: return ""
 
-    l_spend, l_reach = ld.get("spend", 0.0), ld.get("reach", 0)
+    l_imp, l_reach, l_spend = ld.get("impressions", 0), ld.get("reach", 0), ld.get("spend", 0.0)
     l_cv_1d, l_cv_7d = ld.get("cv_1d", 0.0), ld.get("cv_7d", 0.0)
     l_sales_1d, l_sales_7d = ld.get("sales_1d", 0.0), ld.get("sales_7d", 0.0)
     l_cpa = (l_spend / l_cv_7d) if l_cv_7d > 0 else None
     l_roas = (l_sales_7d / l_spend) if l_spend > 0 else None
 
-    t_spend, t_reach = td.get("spend", 0.0), td.get("reach", 0)
+    t_imp, t_reach, t_spend = td.get("impressions", 0), td.get("reach", 0), td.get("spend", 0.0)
     t_cv_1d, t_cv_7d = td.get("cv_1d", 0.0), td.get("cv_7d", 0.0)
     t_sales_1d, t_sales_7d = td.get("sales_1d", 0.0), td.get("sales_7d", 0.0)
     t_cpa = (t_spend / t_cv_7d) if t_cv_7d > 0 else None
     t_roas = (t_sales_7d / t_spend) if t_spend > 0 else None
 
     return [
+        fmt(l_imp), fmt(l_reach), fmt(l_spend),
         fmt(l_cv_1d), fmt(l_cv_7d), fmt(l_sales_1d), fmt(l_sales_7d),
-        fmt(l_spend), fmt(l_reach), fmt(l_cpa), fmt(l_roas),
+        fmt(l_cpa), fmt(l_roas),
+        fmt(t_imp), fmt(t_reach), fmt(t_spend),
         fmt(t_cv_1d), fmt(t_cv_7d), fmt(t_sales_1d), fmt(t_sales_7d),
-        fmt(t_spend), fmt(t_reach), fmt(t_cpa), fmt(t_roas),
+        fmt(t_cpa), fmt(t_roas),
     ]
 
 def build_campaign_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
@@ -172,7 +176,7 @@ def build_ad_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
 
 def build_daily_table(last_rows: List[Dict], this_rows: List[Dict]) -> List[List[Any]]:
     header = [
-        "Period", "Date", "campaign_id", "campaign_name", "spend", "reach", 
+        "Period", "Date", "campaign_id", "campaign_name", "impressions", "reach", "spend", 
         "cv_view_1d", "cv_click_7d", "sales_view_1d", "sales_click_7d", 
         "cpa_click_7d", "roas_click_7d"
     ]
@@ -186,7 +190,7 @@ def build_daily_table(last_rows: List[Dict], this_rows: List[Dict]) -> List[List
     for period_name, rows in [("Last Month", last_rows), ("This Month", this_rows)]:
         for r in rows:
             m = extract_metrics(r)
-            spend, reach = m["spend"], m["reach"]
+            imp, reach, spend = m["impressions"], m["reach"], m["spend"]
             cv1, cv7 = m["cv_1d"], m["cv_7d"]
             s1, s7 = m["sales_1d"], m["sales_7d"]
             cpa = (spend / cv7) if cv7 > 0 else None
@@ -194,7 +198,7 @@ def build_daily_table(last_rows: List[Dict], this_rows: List[Dict]) -> List[List
             
             table.append([
                 period_name, r.get("date_start", ""), r.get("campaign_id", ""), r.get("campaign_name", ""),
-                fmt(spend) if spend else "", fmt(reach) if reach else "", 
+                fmt(imp), fmt(reach), fmt(spend), 
                 fmt(cv1), fmt(cv7), fmt(s1), fmt(s7), fmt(cpa), fmt(roas)
             ])
     return table
@@ -221,7 +225,6 @@ def build_audience_table(
 
     return table
 
-# --- 新規追加: audiencedetail 用のテーブル作成 ---
 def build_audiencedetail_table(
     l_adset_plat, t_adset_plat,
     l_adset_gen_age, t_adset_gen_age,
@@ -238,25 +241,39 @@ def build_audiencedetail_table(
             row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
             table.append(row)
 
-    # 1. 広告セット × プラットフォーム
     add_rows(l_adset_plat, t_adset_plat, "AdSet x Platform", 
              lambda k, d: d.get("adset_name", ""), 
              lambda k, d: d.get("publisher_platform", ""), 
              lambda k, d: "")
              
-    # 2. 広告セット × 性別 × 年齢
     add_rows(l_adset_gen_age, t_adset_gen_age, "AdSet x Gender x Age", 
              lambda k, d: d.get("adset_name", ""), 
              lambda k, d: d.get("gender", ""), 
              lambda k, d: d.get("age", ""))
              
-    # 3. プラットフォーム × 配置 × デバイス
     add_rows(l_plat_pos_dev, t_plat_pos_dev, "Platform x Position x Device", 
              lambda k, d: d.get("publisher_platform", ""), 
              lambda k, d: d.get("platform_position", ""), 
              lambda k, d: d.get("impression_device", ""))
 
     return table
+
+# --- 新規追加: audiencesegment 用のテーブル作成 ---
+def build_audiencesegment_table(
+    l_acc_seg, t_acc_seg
+) -> List[List[Any]]:
+    header = ["Category", "Audience Segment"] + METRIC_HEADERS
+    table = [header]
+
+    for k in sorted(set(l_acc_seg.keys()) | set(t_acc_seg.keys())):
+        ld, td = l_acc_seg.get(k, {}), t_acc_seg.get(k, {})
+        dim = td.get("dim") or ld.get("dim") or {}
+        row = ["Account Level", dim.get("audience_segment", k)]
+        row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
+        table.append(row)
+
+    return table
+
 
 def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -314,7 +331,7 @@ def main():
         print(f"Processing {kind} to sheet '{worksheet_title}'...")
 
         if kind == "MONTHLY":
-            fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
+            fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
             last_map = map_by_key(get_data("last", "campaign", fields), lambda r: r.get("campaign_id"))
             this_map = map_by_key(get_data("this", "campaign", fields), lambda r: r.get("campaign_id"))
             
@@ -323,7 +340,7 @@ def main():
             print(f"OK: wrote {kind} rows={len(table)-1}")
             
         elif kind == "DAILY":
-            fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
+            fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
             last_daily = get_data("last", "campaign", fields, time_increment="1")
             this_daily = get_data("this", "campaign", fields, time_increment="1")
             
@@ -332,7 +349,7 @@ def main():
             print(f"OK: wrote DAILY rows={len(table)-1}")
 
         elif kind == "AD":
-            fields = ["campaign_name", "adset_name", "ad_id", "ad_name", "spend", "reach", "actions", "action_values"]
+            fields = ["campaign_name", "adset_name", "ad_id", "ad_name", "spend", "reach", "impressions", "actions", "action_values"]
             last_map = map_by_key(get_data("last", "ad", fields), lambda r: r.get("ad_id"))
             this_map = map_by_key(get_data("this", "ad", fields), lambda r: r.get("ad_id"))
             
@@ -341,8 +358,8 @@ def main():
             print(f"OK: wrote AD rows={len(table)-1}")
 
         elif kind == "AUDIENCE":
-            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "actions", "action_values"]
-            camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
+            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions", "actions", "action_values"]
+            camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
             l_adset = map_by_key(get_data("last", "adset", adset_fields), lambda r: r.get("adset_id"))
             t_adset = map_by_key(get_data("this", "adset", adset_fields), lambda r: r.get("adset_id"))
@@ -363,21 +380,16 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
 
-        # --- 新規追加: AUDIENCEDETAIL の処理 ---
         elif kind == "AUDIENCEDETAIL":
-            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "actions", "action_values"]
-            acc_fields = ["spend", "reach", "actions", "action_values"]
+            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions", "actions", "action_values"]
+            acc_fields = ["spend", "reach", "impressions", "actions", "action_values"]
 
-            # 1. 広告セット × プラットフォーム
             l_adset_plat = map_by_key(get_data("last", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
             t_adset_plat = map_by_key(get_data("this", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
 
-            # 2. 広告セット × 性別 × 年齢
             l_adset_gen_age = map_by_key(get_data("last", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
             t_adset_gen_age = map_by_key(get_data("this", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
 
-            # 3. プラットフォーム × 配置 × デバイス (アカウント全体)
-            # ユーザー要望の3列出力に合わせるため publisher_platform, platform_position, impression_device の3つを使用
             l_plat_pos_dev = map_by_key(get_data("last", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
             t_plat_pos_dev = map_by_key(get_data("this", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
 
@@ -388,6 +400,18 @@ def main():
             )
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
+
+        # --- 新規追加: AUDIENCESEGMENT の処理 ---
+        elif kind == "AUDIENCESEGMENT":
+            acc_fields = ["spend", "reach", "impressions", "actions", "action_values"]
+
+            # ブレイクダウンで "audience_segment" を指定
+            l_acc_seg = map_by_key(get_data("last", "account", acc_fields, ["audience_segment"]), lambda r: r.get("audience_segment", "Unknown"))
+            t_acc_seg = map_by_key(get_data("this", "account", acc_fields, ["audience_segment"]), lambda r: r.get("audience_segment", "Unknown"))
+
+            table = build_audiencesegment_table(l_acc_seg, t_acc_seg)
+            sheets_write(s_id, worksheet_title, table, g_creds)
+            print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1}")
 
         else:
             print(f"SKIP: sheet_kind '{kind}' is not implemented yet")
