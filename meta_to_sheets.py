@@ -109,13 +109,12 @@ def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str
     if not actions: return 0.0
     for a in actions:
         if a.get("action_type") == target_action:
-            # 修正: 'action_report_default_custom' 指定時は 'value' キーに数値が入るため柔軟に取得
+            # default指定時は 'value' キーに数値が入る
             try: return float(a.get(attr_window, a.get('value', 0)))
             except: return 0.0
     return 0.0
 
 def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
-    # セグメントデータ取得時は attr_window_cv を 'value' などに読み替えて抽出
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
@@ -131,7 +130,6 @@ def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any], is_ause: bool 
     for r in rows:
         k = key_func(r)
         if not k: continue
-        # auseシートの場合は抽出時のアトリビューションキーを 'value' に向ける
         metrics = extract_metrics(r, "value", "value") if is_ause else extract_metrics(r)
         res[k] = {"dim": r, "metrics": metrics}
     return res
@@ -356,7 +354,6 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
     
-    # トークンに合わせv24.0に設定
     api_version = cfg.get("m_api_version", "v24.0")
 
     rng = this_month_range_to_yesterday_jst()
@@ -457,16 +454,15 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 修正: auseシート取得時のみ専用のアトリビューションフラグを渡す ---
+        # --- 修正: auseシート取得時のみ "default" アトリビューションを渡す ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
             
-            # 管理画面の「合算」を分解するための専用パラメータ
-            seg_attr = ["action_report_default_custom"]
+            # ログの許可リストに基づき "default" を指定
+            seg_attr = ["default"]
             target_bd = "audience_segment"
             
             try:
-                # 判定用リクエスト
                 get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
             except RuntimeError as e:
                 if "user_persona_name" in str(e) or "audience_segment" in str(e):
@@ -474,7 +470,6 @@ def main():
                 else:
                     raise e
 
-            # マッピング時に is_ause=True を渡し、抽出キーを 'value' に強制
             l_rows = get_data("last", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
             t_rows = get_data("this", "campaign", camp_fields, [target_bd], attr_windows=seg_attr)
 
