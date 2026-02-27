@@ -1,0 +1,29 @@
+name: meta-to-sheets
+
+on:
+  schedule:
+    - cron: "55 23 * * *"  # 08:55 JST
+    - cron: "4 0 * * *"    # 09:04 JST
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run
+        env:
+          APP_SECRET_JSON: ${{ secrets.APP_SECRET_JSON }}
+        run: |
+          python meta_to_sheets.py
