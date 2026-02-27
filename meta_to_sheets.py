@@ -282,7 +282,6 @@ def build_audiencedetail_table(
 
     return table
 
-# --- auseシート専用: 表示名を Unknown に戻し、基本指標に限定 ---
 def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[List[Any]]:
     header = ["Category", "Campaign Name", "Audience Segment"] + AUSE_METRIC_HEADERS
     table = [header]
@@ -359,13 +358,15 @@ def main():
     this_since, this_until = rng if rng else (None, None)
 
     data_cache = {"last": {}, "this": {}}
-    def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None) -> List[Dict]:
-        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}"
+    
+    # 修正: auseシート等でアトリビューションを無効化できるよう attr_windows 引数を追加
+    def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
+        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}_{str(attr_windows)}"
         if cache_key not in data_cache[period]:
             if period == "last":
                 data_cache[period][cache_key] = meta_get_insights(
                     api_version, m_token, m_act_id, fields, date_preset="last_month",
-                    action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns, time_increment=time_increment
+                    action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment
                 )
             else:
                 if not this_since:
@@ -373,7 +374,7 @@ def main():
                 else:
                     data_cache[period][cache_key] = meta_get_insights(
                         api_version, m_token, m_act_id, fields, time_range={"since": this_since, "until": this_until},
-                        action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns, time_increment=time_increment
+                        action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment
                     )
         return data_cache[period][cache_key]
 
@@ -452,20 +453,23 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
+        # --- 修正: AUDIENCESEGMENT 時はアトリビューションを無効化 ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
             target_bd = "audience_segment"
+            # 修正: ここでの確認用 get_data もアトリビューションを None に設定
             try:
-                get_data("last", "campaign", camp_fields, [target_bd])
+                get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None)
             except RuntimeError as e:
                 if "user_persona_name" in str(e) or "audience_segment" in str(e):
                     target_bd = "user_persona_name"
                 else:
                     raise e
 
-            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, [target_bd]), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
-            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, [target_bd]), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
+            # 修正: attr_windows=None を指定してリクエスト
+            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
+            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
 
             table = build_audiencesegment_table(l_camp_seg, t_camp_seg, target_bd)
             sheets_write(s_id, worksheet_title, table, g_creds)
