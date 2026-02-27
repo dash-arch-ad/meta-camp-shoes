@@ -359,7 +359,6 @@ def main():
 
     data_cache = {"last": {}, "this": {}}
     
-    # 修正: auseシート等でアトリビューションを無効化できるよう attr_windows 引数を追加
     def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
         cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}_{str(attr_windows)}"
         if cache_key not in data_cache[period]:
@@ -453,13 +452,12 @@ def main():
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 修正: AUDIENCESEGMENT 時はアトリビューションを無効化 ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
             target_bd = "audience_segment"
-            # 修正: ここでの確認用 get_data もアトリビューションを None に設定
             try:
+                # attr_windows を指定せず、None でリクエスト
                 get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None)
             except RuntimeError as e:
                 if "user_persona_name" in str(e) or "audience_segment" in str(e):
@@ -467,7 +465,7 @@ def main():
                 else:
                     raise e
 
-            # 修正: attr_windows=None を指定してリクエスト
+            # attr_windows=None を指定してデータを取得
             l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
             t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, [target_bd], attr_windows=None), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
 
