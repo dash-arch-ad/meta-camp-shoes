@@ -115,7 +115,8 @@ def meta_get_insights(
     return out
 
 
-def sum_action_list(actions: Optional[List[Dict[str, str]]], wanted: List[str]) -> float:
+# 修正ポイント1: actionsの型を Dict[str, Any] に変更し、引数 attr_window を追加
+def sum_action_list(actions: Optional[List[Dict[str, Any]]], wanted: List[str], attr_window: str = "value") -> float:
     if not actions:
         return 0.0
     wanted_set = set(wanted)
@@ -123,15 +124,18 @@ def sum_action_list(actions: Optional[List[Dict[str, str]]], wanted: List[str]) 
     for a in actions:
         if a.get("action_type") in wanted_set:
             try:
-                total += float(a.get("value", 0))
+                # デフォルトの 'value' ではなく、指定されたアトリビューションキーの値を取得する
+                total += float(a.get(attr_window, 0))
             except (TypeError, ValueError):
                 pass
     return total
 
 
+# 修正ポイント2: 引数 attr_window を受け取り、sum_action_list に渡すように変更
 def rows_to_purchase_metrics(
     rows: List[Dict[str, Any]],
     purchase_action_types: List[str],
+    attr_window: str = "value"
 ) -> Dict[str, Dict[str, Any]]:
     """
     Returns dict keyed by campaign_id:
@@ -157,8 +161,9 @@ def rows_to_purchase_metrics(
         actions = row.get("actions")          # counts
         action_values = row.get("action_values")  # values
 
-        purchase_cv = sum_action_list(actions, purchase_action_types)
-        purchase_value = sum_action_list(action_values, purchase_action_types)
+        # どのアトリビューションウィンドウの値を取得するか指定
+        purchase_cv = sum_action_list(actions, purchase_action_types, attr_window)
+        purchase_value = sum_action_list(action_values, purchase_action_types, attr_window)
 
         out[cid] = {
             "campaign_id": cid,
@@ -310,7 +315,8 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
 
-    api_version = cfg.get("m_api_version", "v25.0")
+    # 修正ポイント3: 現在のMeta APIのバージョンに合わせてデフォルトを少し調整（v25.0でも動作するならそのままでOK）
+    api_version = cfg.get("m_api_version", "v20.0")
 
     # purchase action types（secretsで上書き可能にしておく）
     purchase_action_types = cfg.get("purchase_action_types", DEFAULT_PURCHASE_ACTION_TYPES)
@@ -346,8 +352,9 @@ def main():
                 action_attribution_windows=["7d_click"],
             )
 
-            last_view = rows_to_purchase_metrics(last_rows_view, purchase_action_types)
-            last_click = rows_to_purchase_metrics(last_rows_click, purchase_action_types)
+            # 修正ポイント4: 関数呼び出し時にアトリビューションのキーを指定
+            last_view = rows_to_purchase_metrics(last_rows_view, purchase_action_types, "1d_view")
+            last_click = rows_to_purchase_metrics(last_rows_click, purchase_action_types, "7d_click")
 
             # --- 今月（当月1日〜前日、JST計算） ---
             rng = this_month_range_to_yesterday_jst()
@@ -373,8 +380,9 @@ def main():
                     action_attribution_windows=["7d_click"],
                 )
 
-                this_view = rows_to_purchase_metrics(this_rows_view, purchase_action_types)
-                this_click = rows_to_purchase_metrics(this_rows_click, purchase_action_types)
+                # 修正ポイント4: 関数呼び出し時にアトリビューションのキーを指定
+                this_view = rows_to_purchase_metrics(this_rows_view, purchase_action_types, "1d_view")
+                this_click = rows_to_purchase_metrics(this_rows_click, purchase_action_types, "7d_click")
 
             table = build_monthly_table_purchase_attr(last_view, last_click, this_view, this_click)
             sheets_write(s_id, worksheet_title, table, g_creds)
