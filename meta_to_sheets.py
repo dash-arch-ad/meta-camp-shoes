@@ -30,9 +30,9 @@ METRIC_HEADERS = [
 # auseシート専用のヘッダー（Imp, Spend, CVのみ）
 AUSE_METRIC_HEADERS = [
     "last_month_impressions", "last_month_spend",
-    "last_month_cv_view_1d", "last_month_cv_click_7d",
+    "last_month_cv",
     "this_month_impressions", "this_month_spend",
-    "this_month_cv_view_1d", "this_month_cv_click_7d",
+    "this_month_cv",
 ]
 
 def _act_id_normalize(m_act_id: str) -> str:
@@ -168,14 +168,14 @@ def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]
         except: return ""
 
     l_imp, l_spend = ld.get("impressions", 0), ld.get("spend", 0.0)
-    l_cv_1d, l_cv_7d = ld.get("cv_1d", 0.0), ld.get("cv_7d", 0.0)
+    l_cv_1d = ld.get("cv_1d", 0.0)
 
     t_imp, t_spend = td.get("impressions", 0), td.get("spend", 0.0)
-    t_cv_1d, t_cv_7d = td.get("cv_1d", 0.0), td.get("cv_7d", 0.0)
+    t_cv_1d = td.get("cv_1d", 0.0)
 
     return [
-        fmt(l_imp), fmt(l_spend), fmt(l_cv_1d), fmt(l_cv_7d),
-        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d), fmt(t_cv_7d)
+        fmt(l_imp), fmt(l_spend), fmt(l_cv_1d),
+        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d)
     ]
 
 def build_campaign_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
@@ -470,48 +470,32 @@ def main():
                     return
 
                 sample = rows[0]
-                print(f"[AUSE DEBUG] {tag}: sample keys={sorted(sample.keys())}")
-                print(f"[AUSE DEBUG] {tag}: sample {bd}={sample.get(bd)}")
-
                 counts: Dict[str, int] = {}
                 missing = 0
-                non_empty = 0
                 for r in rows:
                     if bd not in r:
                         missing += 1
                         v = "__MISSING__"
                     else:
                         v = r.get(bd)
-                        if v not in (None, ""):
-                            non_empty += 1
                     counts[str(v)] = counts.get(str(v), 0) + 1
 
-                top10 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-                print(f"[AUSE DEBUG] {tag}: bd counts top10={top10} missing={missing}/{len(rows)} non_empty={non_empty}/{len(rows)}")
+                top3 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:3]
+                print(f"[AUSE DEBUG] {tag}: bd top3={top3} missing={missing}/{len(rows)}")
 
                 acts = sample.get("actions")
+                cv_val = 0
+                sales_val = 0
                 if isinstance(acts, list):
-                    atypes = []
                     for a in acts:
-                        if isinstance(a, dict):
-                            atypes.append(a.get("action_type"))
-                    print(f"[AUSE DEBUG] {tag}: actions types sample={atypes[:30]}")
+                        if not isinstance(a, dict):
+                            continue
+                        if a.get("action_type") == TARGET_ACTION_CV:
+                            cv_val = a.get("value", 0)
+                        elif a.get("action_type") == TARGET_ACTION_SALES:
+                            sales_val = a.get("value", 0)
 
-                    for target in [TARGET_ACTION_CV, TARGET_ACTION_SALES]:
-                        found = None
-                        for a in acts:
-                            if isinstance(a, dict) and a.get("action_type") == target:
-                                found = a
-                                break
-                        if found:
-                            print(
-                                f"[AUSE DEBUG] {tag}: action '{target}' keys={sorted(found.keys())} "
-                                f"value={found.get('value')} 1d_view={found.get('1d_view')} 7d_click={found.get('7d_click')}"
-                            )
-                        else:
-                            print(f"[AUSE DEBUG] {tag}: action '{target}' NOT FOUND in sample actions")
-                else:
-                    print(f"[AUSE DEBUG] {tag}: actions type={type(acts)}")
+                print(f"[AUSE DEBUG] {tag}: sample_action_values cv={cv_val} sales={sales_val}")
 
             def has_real_breakdown(rows: List[Dict[str, Any]], bd: str) -> bool:
                 if not rows:
