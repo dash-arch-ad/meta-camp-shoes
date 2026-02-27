@@ -1,13 +1,17 @@
 import os
 import json
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
+from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+
 GRAPH_BASE = "https://graph.facebook.com"
+JST = ZoneInfo("Asia/Tokyo")
 
 # ---- Meta: CV/ROAS のデフォルト定義（必要なら調整）----
 DEFAULT_CV_ACTION_TYPES = [
@@ -31,26 +35,56 @@ def _act_id_normalize(m_act_id: str) -> str:
     return s[4:] if s.startswith("act_") else s
 
 
+def this_month_range_to_yesterday_jst() -> Optional[Tuple[str, str]]:
+    """
+    Returns (since, until) as YYYY-MM-DD in JST:
+      since = first day of this month
+      until = yesterday
+    If today is the 1st, returns None (range would be invalid).
+    """
+    today = datetime.now(JST).date()
+    yesterday = today - timedelta(days=1)
+    since = date(today.year, today.month, 1)
+    if yesterday < since:
+        return None
+    return since.isoformat(), yesterday.isoformat()
+
+
 def meta_get_insights(
     api_version: str,
     m_token: str,
     m_act_id: str,
-    date_preset: str,
     fields: List[str],
+    date_preset: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
     level: str = "campaign",
     limit: int = 500,
     max_pages: int = 50,
 ) -> List[Dict[str, Any]]:
+    """
+    Either:
+      - date_preset="last_month" etc
+    Or:
+      - time_range={"since":"YYYY-MM-DD","until":"YYYY-MM-DD"}
+    """
+    if (date_preset is None) == (time_range is None):
+        raise ValueError("Specify exactly one of date_preset or time_range")
+
     act = _act_id_normalize(m_act_id)
     url = f"{GRAPH_BASE}/{api_version}/act_{act}/insights"
 
-    params = {
+    params: Dict[str, Any] = {
         "access_token": m_token,
         "level": level,
-        "date_preset": date_preset,
         "fields": ",".join(fields),
         "limit": limit,
     }
+
+    if date_preset is not None:
+        params["date_preset"] = date_preset
+    else:
+        # Graph API expects time_range as an object-like parameter; safest is JSON string.
+        params["time_range"] = json.dumps(time_range, separators=(",", ":"))
 
     out: List[Dict[str, Any]] = []
     pages = 0
@@ -72,7 +106,7 @@ def meta_get_insights(
             break
 
         url = next_url
-        params = None
+        params = None  # next URL already has query params
         time.sleep(0.2)
 
     return out
@@ -172,21 +206,38 @@ def build_monthly_table(
             return ""
 
     for cid in all_ids:
-        lm = last.get(cid, {})
-        tm = this_.get(cid, {})
-        name = (tm.get("campaign_name") or lm.get("campaign_name") or "")
+        lm = last.get(cid)
+        tm = this_.get(cid)
+        name = ((tm or {}).get("campaign_name") or (lm or {}).get("campaign_name") or "")
+
+        # その期間に存在しないキャンペーンは「空」にして誤解を減らす
+        if lm is None:
+            lm_cv = lm_cpa = lm_roas = lm_spend = ""
+        else:
+            lm_cv = fmt_num(lm.get("cv"))
+            lm_cpa = fmt_num(lm.get("cpa"))
+            lm_roas = fmt_num(lm.get("roas"))
+            lm_spend = fmt_num(lm.get("spend"))
+
+        if tm is None:
+            tm_cv = tm_cpa = tm_roas = tm_spend = ""
+        else:
+            tm_cv = fmt_num(tm.get("cv"))
+            tm_cpa = fmt_num(tm.get("cpa"))
+            tm_roas = fmt_num(tm.get("roas"))
+            tm_spend = fmt_num(tm.get("spend"))
 
         table.append([
             cid,
             name,
-            fmt_num(lm.get("cv", 0.0)),
-            fmt_num(lm.get("cpa")),
-            fmt_num(lm.get("roas")),
-            fmt_num(lm.get("spend", 0.0)),
-            fmt_num(tm.get("cv", 0.0)),
-            fmt_num(tm.get("cpa")),
-            fmt_num(tm.get("roas")),
-            fmt_num(tm.get("spend", 0.0)),
+            lm_cv,
+            lm_cpa,
+            lm_roas,
+            lm_spend,
+            tm_cv,
+            tm_cpa,
+            tm_roas,
+            tm_spend,
         ])
 
     return table
@@ -234,7 +285,6 @@ def main():
 
     cv_action_types = cfg.get("cv_action_types", DEFAULT_CV_ACTION_TYPES)
     roas_value_action_types = cfg.get("roas_value_action_types", DEFAULT_VALUE_ACTION_TYPES_FOR_ROAS)
-
     api_version = cfg.get("m_api_version", "v25.0")
 
     fields = [
@@ -244,14 +294,36 @@ def main():
         "actions",
         "action_values",
         "purchase_roas",
+        # "date_start", "date_stop",  # デバッグしたいなら一時的に足す
     ]
 
     for sheet_kind, worksheet_title in sheets_map.items():
         kind = str(sheet_kind).strip().upper()
 
         if kind == "MONTHLY":
-            last_rows = meta_get_insights(api_version, m_token, m_act_id, "last_month", fields)
-            this_rows = meta_get_insights(api_version, m_token, m_act_id, "this_month", fields)
+            # 先月はそのまま full-month
+            last_rows = meta_get_insights(
+                api_version=api_version,
+                m_token=m_token,
+                m_act_id=m_act_id,
+                fields=fields,
+                date_preset="last_month",
+            )
+
+            # 今月は「当月1日〜前日」に固定（JST基準）
+            rng = this_month_range_to_yesterday_jst()
+            if rng is None:
+                this_rows = []
+            else:
+                since, until = rng
+                this_rows = meta_get_insights(
+                    api_version=api_version,
+                    m_token=m_token,
+                    m_act_id=m_act_id,
+                    fields=fields,
+                    time_range={"since": since, "until": until},
+                )
+
             table = build_monthly_table(last_rows, this_rows, cv_action_types, roas_value_action_types)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote MONTHLY to sheet '{worksheet_title}' rows={len(table)-1}")
