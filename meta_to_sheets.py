@@ -159,7 +159,6 @@ def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
         fmt(t_cpa), fmt(t_roas),
     ]
 
-# auseシート専用の行作成関数
 def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
     def fmt(x: Any) -> Any:
         if x is None: return ""
@@ -283,8 +282,7 @@ def build_audiencedetail_table(
 
     return table
 
-def build_audiencesegment_table(l_camp_seg, t_camp_seg) -> List[List[Any]]:
-    # 修正: ause専用のヘッダーを使用
+def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[List[Any]]:
     header = ["Category", "Campaign Name", "Audience Segment"] + AUSE_METRIC_HEADERS
     table = [header]
 
@@ -305,13 +303,16 @@ def build_audiencesegment_table(l_camp_seg, t_camp_seg) -> List[List[Any]]:
     for k in sorted(set(l_camp_seg.keys()) | set(t_camp_seg.keys())):
         ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
         dim = td.get("dim") or ld.get("dim") or {}
-        persona = dim.get("user_persona_name", "Unknown")
+        persona = dim.get(breakdown_key, "Unknown")
+        
+        # 理由が明確になるよう Unknown の場合の表示名を変更
+        if persona == "Unknown":
+            persona = "未分類 (Non-Sales/Unknown)"
 
         if ld: add_to_totals("last", persona, ld.get("metrics", {}))
         if td: add_to_totals("this", persona, td.get("metrics", {}))
 
         row = ["Campaign", dim.get("campaign_name", ""), persona]
-        # 修正: ause専用の行作成関数を使用
         row.extend(compute_ause_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
         table.append(row)
 
@@ -320,7 +321,6 @@ def build_audiencesegment_table(l_camp_seg, t_camp_seg) -> List[List[Any]]:
         ld_metrics = seg_totals["last"].get(p, {})
         td_metrics = seg_totals["this"].get(p, {})
         row = ["Total", "All Campaigns Sum", p]
-        # 修正: ause専用の行作成関数を使用
         row.extend(compute_ause_metric_row(ld_metrics, td_metrics))
         table.append(row)
 
@@ -355,7 +355,9 @@ def main():
     s_id = cfg["s_id"]
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
-    api_version = cfg.get("m_api_version", "v20.0")
+    
+    # ユーザー様のトークンに合わせてv24.0にアップデート
+    api_version = cfg.get("m_api_version", "v24.0")
 
     rng = this_month_range_to_yesterday_jst()
     this_since, this_until = rng if rng else (None, None)
@@ -457,10 +459,20 @@ def main():
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
-            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, ["user_persona_name"]), lambda r: f"{r.get('campaign_id')}_{r.get('user_persona_name', 'Unknown')}")
-            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, ["user_persona_name"]), lambda r: f"{r.get('campaign_id')}_{r.get('user_persona_name', 'Unknown')}")
+            # v24.0向けに "audience_segment" を優先。エラーがあれば自動で "user_persona_name" にフォールバックする安全処理
+            target_bd = "audience_segment"
+            try:
+                get_data("last", "campaign", camp_fields, [target_bd])
+            except RuntimeError as e:
+                if "user_persona_name" in str(e) or "audience_segment" in str(e):
+                    target_bd = "user_persona_name"
+                else:
+                    raise e
 
-            table = build_audiencesegment_table(l_camp_seg, t_camp_seg)
+            l_camp_seg = map_by_key(get_data("last", "campaign", camp_fields, [target_bd]), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
+            t_camp_seg = map_by_key(get_data("this", "campaign", camp_fields, [target_bd]), lambda r: f"{r.get('campaign_id')}_{r.get(target_bd, 'Unknown')}")
+
+            table = build_audiencesegment_table(l_camp_seg, t_camp_seg, target_bd)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1}")
 
