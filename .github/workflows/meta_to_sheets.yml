@@ -2,7 +2,7 @@ name: meta-to-sheets
 
 on:
   schedule:
-    - cron: "55 23 * * *"  # 08:55 JST
+    - cron: "59 23 * * *"  # 08:59 JST
     - cron: "4 0 * * *"    # 09:04 JST
   workflow_dispatch:
 
