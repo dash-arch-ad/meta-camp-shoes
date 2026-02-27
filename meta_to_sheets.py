@@ -282,6 +282,7 @@ def build_audiencedetail_table(
 
     return table
 
+# --- auseシート専用: 表示名を Unknown に戻し、基本指標に限定 ---
 def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[List[Any]]:
     header = ["Category", "Campaign Name", "Audience Segment"] + AUSE_METRIC_HEADERS
     table = [header]
@@ -304,10 +305,6 @@ def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[L
         ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
         dim = td.get("dim") or ld.get("dim") or {}
         persona = dim.get(breakdown_key, "Unknown")
-        
-        # 理由が明確になるよう Unknown の場合の表示名を変更
-        if persona == "Unknown":
-            persona = "未分類 (Non-Sales/Unknown)"
 
         if ld: add_to_totals("last", persona, ld.get("metrics", {}))
         if td: add_to_totals("this", persona, td.get("metrics", {}))
@@ -356,7 +353,6 @@ def main():
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
     
-    # ユーザー様のトークンに合わせてv24.0にアップデート
     api_version = cfg.get("m_api_version", "v24.0")
 
     rng = this_month_range_to_yesterday_jst()
@@ -459,7 +455,6 @@ def main():
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
-            # v24.0向けに "audience_segment" を優先。エラーがあれば自動で "user_persona_name" にフォールバックする安全処理
             target_bd = "audience_segment"
             try:
                 get_data("last", "campaign", camp_fields, [target_bd])
