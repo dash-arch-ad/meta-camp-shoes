@@ -44,6 +44,7 @@ def meta_get_insights(
     date_preset: Optional[str] = None, time_range: Optional[Dict[str, str]] = None,
     action_attribution_windows: Optional[List[str]] = None,
     level: str = "campaign", breakdowns: Optional[List[str]] = None,
+    time_increment: Optional[str] = None,
     limit: int = 500, max_pages: int = 50,
 ) -> List[Dict[str, Any]]:
     
@@ -67,6 +68,9 @@ def meta_get_insights(
         
     if breakdowns:
         params["breakdowns"] = ",".join(breakdowns)
+        
+    if time_increment:
+        params["time_increment"] = time_increment
 
     out: List[Dict[str, Any]] = []
     pages = 0
@@ -166,30 +170,56 @@ def build_ad_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
         table.append(row)
     return table
 
+def build_daily_table(last_rows: List[Dict], this_rows: List[Dict]) -> List[List[Any]]:
+    header = [
+        "Period", "Date", "campaign_id", "campaign_name", "spend", "reach", 
+        "cv_view_1d", "cv_click_7d", "sales_view_1d", "sales_click_7d", 
+        "cpa_click_7d", "roas_click_7d"
+    ]
+    table = [header]
+    
+    def fmt(x: Any) -> Any:
+        if x is None: return ""
+        try: return round(float(x), 6)
+        except: return ""
+
+    for period_name, rows in [("Last Month", last_rows), ("This Month", this_rows)]:
+        for r in rows:
+            m = extract_metrics(r)
+            spend, reach = m["spend"], m["reach"]
+            cv1, cv7 = m["cv_1d"], m["cv_7d"]
+            s1, s7 = m["sales_1d"], m["sales_7d"]
+            cpa = (spend / cv7) if cv7 > 0 else None
+            roas = (s7 / spend) if spend > 0 else None
+            
+            table.append([
+                period_name, r.get("date_start", ""), r.get("campaign_id", ""), r.get("campaign_name", ""),
+                fmt(spend) if spend else "", fmt(reach) if reach else "", 
+                fmt(cv1), fmt(cv7), fmt(s1), fmt(s7), fmt(cpa), fmt(roas)
+            ])
+    return table
+
+# 修正箇所: 引数を campaign レベルに変更し、列名も Campaign Name に変更
 def build_audience_table(
-    l_adset, t_adset, l_acc, t_acc, l_gender, t_gender, l_age, t_age, l_plat, t_plat
+    l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat
 ) -> List[List[Any]]:
-    header = ["Category", "Detail1", "Detail2"] + METRIC_HEADERS
+    header = ["Category", "Campaign Name", "Breakdown"] + METRIC_HEADERS
     table = [header]
 
-    def add_rows(last_m, this_m, cat_name, detail1_fn, detail2_fn):
+    def add_rows(last_m, this_m, cat_name, camp_fn, detail_fn):
         for k in sorted(set(last_m.keys()) | set(this_m.keys())):
             ld, td = last_m.get(k, {}), this_m.get(k, {})
             dim = td.get("dim") or ld.get("dim") or {}
-            row = [cat_name, detail1_fn(k, dim), detail2_fn(k, dim)]
+            row = [cat_name, camp_fn(k, dim), detail_fn(k, dim)]
             row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
             table.append(row)
 
     add_rows(l_adset, t_adset, "AdSet", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("adset_name", ""))
     
-    add_rows(l_acc, t_acc, "Gender", lambda k, d: "Total", lambda k, d: "")
-    add_rows(l_gender, t_gender, "Gender", lambda k, d: k, lambda k, d: "")
-    
-    add_rows(l_acc, t_acc, "Age", lambda k, d: "Total", lambda k, d: "")
-    add_rows(l_age, t_age, "Age", lambda k, d: k, lambda k, d: "")
-    
-    add_rows(l_acc, t_acc, "Platform", lambda k, d: "Total", lambda k, d: "")
-    add_rows(l_plat, t_plat, "Platform", lambda k, d: k, lambda k, d: "")
+    add_rows(l_camp, t_camp, "Campaign Total", lambda k, d: d.get("campaign_name", ""), lambda k, d: "Total")
+    add_rows(l_gender, t_gender, "Gender", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("gender", ""))
+    add_rows(l_age, t_age, "Age", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("age", ""))
+    add_rows(l_plat, t_plat, "Platform", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("publisher_platform", ""))
 
     return table
 
@@ -225,15 +255,14 @@ def main():
     rng = this_month_range_to_yesterday_jst()
     this_since, this_until = rng if rng else (None, None)
 
-    # APIからデータを取得・キャッシュする関数
     data_cache = {"last": {}, "this": {}}
-    def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None) -> List[Dict]:
-        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}"
+    def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None) -> List[Dict]:
+        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}"
         if cache_key not in data_cache[period]:
             if period == "last":
                 data_cache[period][cache_key] = meta_get_insights(
                     api_version, m_token, m_act_id, fields, date_preset="last_month",
-                    action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns
+                    action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns, time_increment=time_increment
                 )
             else:
                 if not this_since:
@@ -241,16 +270,15 @@ def main():
                 else:
                     data_cache[period][cache_key] = meta_get_insights(
                         api_version, m_token, m_act_id, fields, time_range={"since": this_since, "until": this_until},
-                        action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns
+                        action_attribution_windows=["1d_view", "7d_click"], level=level, breakdowns=breakdowns, time_increment=time_increment
                     )
         return data_cache[period][cache_key]
 
-    # --- 各シートの処理 ---
     for sheet_kind, worksheet_title in sheets_map.items():
         kind = str(sheet_kind).strip().upper()
         print(f"Processing {kind} to sheet '{worksheet_title}'...")
 
-        if kind in ("MONTHLY", "DAILY"):
+        if kind == "MONTHLY":
             fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
             last_map = map_by_key(get_data("last", "campaign", fields), lambda r: r.get("campaign_id"))
             this_map = map_by_key(get_data("this", "campaign", fields), lambda r: r.get("campaign_id"))
@@ -258,6 +286,15 @@ def main():
             table = build_campaign_table(last_map, this_map)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote {kind} rows={len(table)-1}")
+            
+        elif kind == "DAILY":
+            fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
+            last_daily = get_data("last", "campaign", fields, time_increment="1")
+            this_daily = get_data("this", "campaign", fields, time_increment="1")
+            
+            table = build_daily_table(last_daily, this_daily)
+            sheets_write(s_id, worksheet_title, table, g_creds)
+            print(f"OK: wrote DAILY rows={len(table)-1}")
 
         elif kind == "AD":
             fields = ["campaign_name", "adset_name", "ad_id", "ad_name", "spend", "reach", "actions", "action_values"]
@@ -269,25 +306,27 @@ def main():
             print(f"OK: wrote AD rows={len(table)-1}")
 
         elif kind == "AUDIENCE":
+            # 修正箇所: すべて account レベルから campaign レベルでの取得に変更
             adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "actions", "action_values"]
-            acc_fields = ["spend", "reach", "actions", "action_values"]
+            camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "actions", "action_values"]
 
             l_adset = map_by_key(get_data("last", "adset", adset_fields), lambda r: r.get("adset_id"))
             t_adset = map_by_key(get_data("this", "adset", adset_fields), lambda r: r.get("adset_id"))
 
-            l_acc = map_by_key(get_data("last", "account", acc_fields), lambda r: "TOTAL")
-            t_acc = map_by_key(get_data("this", "account", acc_fields), lambda r: "TOTAL")
+            l_camp = map_by_key(get_data("last", "campaign", camp_fields), lambda r: r.get("campaign_id"))
+            t_camp = map_by_key(get_data("this", "campaign", camp_fields), lambda r: r.get("campaign_id"))
 
-            l_gender = map_by_key(get_data("last", "account", acc_fields, ["gender"]), lambda r: r.get("gender"))
-            t_gender = map_by_key(get_data("this", "account", acc_fields, ["gender"]), lambda r: r.get("gender"))
+            # 複数行が混ざらないよう、キーを「campaign_id + breakdown」にしてマッピング
+            l_gender = map_by_key(get_data("last", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
+            t_gender = map_by_key(get_data("this", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
 
-            l_age = map_by_key(get_data("last", "account", acc_fields, ["age"]), lambda r: r.get("age"))
-            t_age = map_by_key(get_data("this", "account", acc_fields, ["age"]), lambda r: r.get("age"))
+            l_age = map_by_key(get_data("last", "campaign", camp_fields, ["age"]), lambda r: f"{r.get('campaign_id')}_{r.get('age')}")
+            t_age = map_by_key(get_data("this", "campaign", camp_fields, ["age"]), lambda r: f"{r.get('campaign_id')}_{r.get('age')}")
 
-            l_plat = map_by_key(get_data("last", "account", acc_fields, ["publisher_platform"]), lambda r: r.get("publisher_platform"))
-            t_plat = map_by_key(get_data("this", "account", acc_fields, ["publisher_platform"]), lambda r: r.get("publisher_platform"))
+            l_plat = map_by_key(get_data("last", "campaign", camp_fields, ["publisher_platform"]), lambda r: f"{r.get('campaign_id')}_{r.get('publisher_platform')}")
+            t_plat = map_by_key(get_data("this", "campaign", camp_fields, ["publisher_platform"]), lambda r: f"{r.get('campaign_id')}_{r.get('publisher_platform')}")
 
-            table = build_audience_table(l_adset, t_adset, l_acc, t_acc, l_gender, t_gender, l_age, t_age, l_plat, t_plat)
+            table = build_audience_table(l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat)
             sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
 
