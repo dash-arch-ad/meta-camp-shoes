@@ -350,7 +350,8 @@ def main():
     cfg = json.loads(raw)
     m_token = cfg["m_token"]
     m_act_id = cfg["m_act_id"]
-    s_id = cfg["s_id"]
+    _s_id_raw = cfg["s_id"]
+    s_id_list = _s_id_raw if isinstance(_s_id_raw, list) else [_s_id_raw]
     sheets_map = cfg.get("sheets", {})
     g_creds = cfg["g_creds"]
     
@@ -389,7 +390,8 @@ def main():
             this_map = map_by_key(get_data("this", "campaign", fields), lambda r: r.get("campaign_id"))
             
             table = build_campaign_table(last_map, this_map)
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote {kind} rows={len(table)-1}")
             
         elif kind == "DAILY":
@@ -398,7 +400,8 @@ def main():
             this_daily = get_data("this", "campaign", fields, time_increment="1")
             
             table = build_daily_table(last_daily, this_daily)
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote DAILY rows={len(table)-1}")
 
         elif kind == "AD":
@@ -407,7 +410,8 @@ def main():
             this_map = map_by_key(get_data("this", "ad", fields), lambda r: r.get("ad_id"))
             
             table = build_ad_table(last_map, this_map)
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AD rows={len(table)-1}")
 
         elif kind == "AUDIENCE":
@@ -430,7 +434,8 @@ def main():
             t_plat = map_by_key(get_data("this", "campaign", camp_fields, ["publisher_platform"]), lambda r: f"{r.get('campaign_id')}_{r.get('publisher_platform')}")
 
             table = build_audience_table(l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat)
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
 
         elif kind == "AUDIENCEDETAIL":
@@ -451,7 +456,8 @@ def main():
                 l_adset_gen_age, t_adset_gen_age,
                 l_plat_pos_dev, t_plat_pos_dev
             )
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
         # --- 修正: auseシート取得時のみ breakdow候補を検証し、actionsログで原因特定できるようにする ---
@@ -547,7 +553,8 @@ def main():
             t_camp_seg = map_by_key(t_rows, ause_map_key, is_ause=True)
 
             table = build_audiencesegment_table(l_camp_seg, t_camp_seg, chosen_bd)
-            sheets_write(s_id, worksheet_title, table, g_creds)
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1} (bd={chosen_bd})")
 
         else:
