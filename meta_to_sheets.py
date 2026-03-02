@@ -330,17 +330,20 @@ def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List
     creds = Credentials.from_service_account_info(g_creds, scopes=scopes)
     service = build("sheets", "v4", credentials=creds)
 
-    ss = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    titles = {s["properties"]["title"] for s in ss.get("sheets", [])}
-    if worksheet_title not in titles:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id, body={"requests": [{"addSheet": {"properties": {"title": worksheet_title}}}]}
-        ).execute()
+    try:
+        ss = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        titles = {s["properties"]["title"] for s in ss.get("sheets", [])}
+        if worksheet_title not in titles:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id, body={"requests": [{"addSheet": {"properties": {"title": worksheet_title}}}]}
+            ).execute()
 
-    service.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range=f"{worksheet_title}!A:Z", body={}).execute()
-    service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id, range=f"{worksheet_title}!A1", valueInputOption="USER_ENTERED", body={"values": values_2d}
-    ).execute()
+        service.spreadsheets().values().clear(spreadsheetId=spreadsheet_id, range=f"{worksheet_title}!A:Z", body={}).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id, range=f"{worksheet_title}!A1", valueInputOption="USER_ENTERED", body={"values": values_2d}
+        ).execute()
+    except Exception as e:
+        raise RuntimeError(f"sheets_write failed for sheet='{worksheet_title}': {type(e).__name__}") from None
 
 
 def main():
