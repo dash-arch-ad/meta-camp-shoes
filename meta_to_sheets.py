@@ -65,7 +65,7 @@ AUSE_ROW_METRIC_HEADERS = [
 ]
 
 AUDE_ROW_EXTRA_METRIC_HEADERS = [
-    "link_clicks", "clicks_all",
+    "link_clicks", "clicks_all", "purchase",
     "add_to_cart", "leads",
     "post_reactions", "post_comments",
     "post_saves", "post_shares",
@@ -242,6 +242,7 @@ def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", a
     metrics.update({
         "link_clicks": float(row.get("inline_link_clicks") or 0.0),
         "clicks_all": float(row.get("clicks") or 0.0),
+        "purchase": get_action_value(actions, "purchase", attr_window_cv_click),
         "add_to_cart": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["add_to_cart"], attr_window_cv_click),
         "leads": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["leads"], attr_window_cv_click),
         "post_reactions": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_reactions"], attr_window_cv_click),
@@ -303,15 +304,31 @@ def compute_monthly_metric_row(metrics: Dict[str, Any]) -> List[Any]:
 
 
 def compute_monthly_aude_metric_row(metrics: Dict[str, Any]) -> List[Any]:
-    return compute_monthly_metric_row(metrics) + [
+    spend = metrics.get("spend", 0.0)
+    cv7 = metrics.get("cv_7d", 0.0)
+    sales7 = metrics.get("sales_7d", 0.0)
+    cpa = (spend / cv7) if cv7 > 0 else None
+    roas = (sales7 / spend) if spend > 0 else None
+
+    return [
+        fmt_value(metrics.get("impressions", 0)),
+        fmt_value(metrics.get("reach", 0)),
+        fmt_value(spend),
         fmt_value(metrics.get("link_clicks", 0.0)),
         fmt_value(metrics.get("clicks_all", 0.0)),
+        fmt_value(metrics.get("purchase", 0.0)),
         fmt_value(metrics.get("add_to_cart", 0.0)),
         fmt_value(metrics.get("leads", 0.0)),
         fmt_value(metrics.get("post_reactions", 0.0)),
         fmt_value(metrics.get("post_comments", 0.0)),
         fmt_value(metrics.get("post_saves", 0.0)),
         fmt_value(metrics.get("post_shares", 0.0)),
+        fmt_value(metrics.get("cv_1d", 0.0)),
+        fmt_value(cv7),
+        fmt_value(metrics.get("sales_1d", 0.0)),
+        fmt_value(sales7),
+        fmt_value(cpa),
+        fmt_value(roas),
     ]
 
 
@@ -365,11 +382,11 @@ def compute_aude_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]
 
     base = compute_metric_row(ld, td)
     return base + [
-        fmt(ld.get("link_clicks", 0.0)), fmt(ld.get("clicks_all", 0.0)),
+        fmt(ld.get("link_clicks", 0.0)), fmt(ld.get("clicks_all", 0.0)), fmt(ld.get("purchase", 0.0)),
         fmt(ld.get("add_to_cart", 0.0)), fmt(ld.get("leads", 0.0)),
         fmt(ld.get("post_reactions", 0.0)), fmt(ld.get("post_comments", 0.0)),
         fmt(ld.get("post_saves", 0.0)), fmt(ld.get("post_shares", 0.0)),
-        fmt(td.get("link_clicks", 0.0)), fmt(td.get("clicks_all", 0.0)),
+        fmt(td.get("link_clicks", 0.0)), fmt(td.get("clicks_all", 0.0)), fmt(td.get("purchase", 0.0)),
         fmt(td.get("add_to_cart", 0.0)), fmt(td.get("leads", 0.0)),
         fmt(td.get("post_reactions", 0.0)), fmt(td.get("post_comments", 0.0)),
         fmt(td.get("post_saves", 0.0)), fmt(td.get("post_shares", 0.0)),
@@ -479,7 +496,13 @@ def build_audiencedetail_monthly_table(
     adset_gen_age_rows: List[Dict],
     plat_pos_dev_rows: List[Dict],
 ) -> List[List[Any]]:
-    header = ["Month", "Category", "Detail1", "Detail2", "Detail3"] + ROW_METRIC_HEADERS + AUDE_ROW_EXTRA_METRIC_HEADERS
+    header = [
+        "Month", "Category", "Detail1", "Detail2", "Detail3",
+        "impressions", "reach", "spend",
+        "link_clicks", "clicks_all", "purchase", "add_to_cart", "leads",
+        "post_reactions", "post_comments", "post_saves", "post_shares",
+        "cv_view_1d", "cv_click_7d", "sales_view_1d", "sales_click_7d", "cpa_click_7d", "roas_click_7d",
+    ]
     table = [header]
 
     def add_rows(rows: List[Dict], cat_name: str, d1_fn, d2_fn, d3_fn):
