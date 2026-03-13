@@ -509,10 +509,10 @@ def build_audiencedetail_monthly_table(
     )
     add_rows(
         plat_pos_dev_rows,
-        "Platform x Position x Device",
+        "Platform x Position x Device Platform",
         lambda r: r.get("publisher_platform", ""),
         lambda r: r.get("platform_position", ""),
-        lambda r: r.get("impression_device", ""),
+        lambda r: r.get("device_platform", ""),
     )
 
     return table
@@ -922,7 +922,7 @@ def main():
 
             adset_plat_rows = get_monthly_data("adset", adset_fields, ["publisher_platform"])
             adset_gen_age_rows = get_monthly_data("adset", adset_fields, ["gender", "age"])
-            plat_pos_dev_rows = get_monthly_data("account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
+            plat_pos_dev_rows = get_monthly_data("account", acc_fields, ["publisher_platform", "platform_position", "device_platform"])
 
             aude_debug("monthly adset x platform", adset_plat_rows)
             aude_debug("monthly adset x gender x age", adset_gen_age_rows)
