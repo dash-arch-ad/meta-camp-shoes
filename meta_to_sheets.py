@@ -53,6 +53,24 @@ AUDE_EXTRA_METRIC_HEADERS = [
     "this_month_post_saves", "this_month_post_shares",
 ]
 
+ROW_METRIC_HEADERS = [
+    "impressions", "reach", "spend",
+    "cv_view_1d", "cv_click_7d",
+    "sales_view_1d", "sales_click_7d",
+    "cpa_click_7d", "roas_click_7d",
+]
+
+AUSE_ROW_METRIC_HEADERS = [
+    "impressions", "spend", "cv",
+]
+
+AUDE_ROW_EXTRA_METRIC_HEADERS = [
+    "link_clicks", "clicks_all",
+    "add_to_cart", "leads",
+    "post_reactions", "post_comments",
+    "post_saves", "post_shares",
+]
+
 AUDE_ACTION_TYPE_CANDIDATES = {
     "add_to_cart": [
         "offsite_conversion.fb_pixel_add_to_cart",
@@ -94,6 +112,16 @@ def month_start_n_months_ago(base_month_start: date, months_ago: int) -> date:
         year -= 1
         month += 12
     return date(year, month, 1)
+
+
+def compare_monthly_range_to_yesterday_jst() -> Optional[Tuple[str, str]]:
+    today = datetime.now(JST).date()
+    yesterday = today - timedelta(days=1)
+    current_month_start = date(today.year, today.month, 1)
+    since = month_start_n_months_ago(current_month_start, 1)
+    if yesterday < since:
+        return None
+    return since.isoformat(), yesterday.isoformat()
 
 
 def monthly_range_to_yesterday_jst() -> Optional[Tuple[str, str]]:
@@ -245,6 +273,56 @@ def map_aude_by_key(rows: List[Dict], key_func: Callable[[Dict], Any]) -> Dict[s
     return res
 
 
+def fmt_value(x: Any) -> Any:
+    if x is None:
+        return ""
+    try:
+        return round(float(x), 6)
+    except:
+        return ""
+
+
+def compute_monthly_metric_row(metrics: Dict[str, Any]) -> List[Any]:
+    spend = metrics.get("spend", 0.0)
+    cv7 = metrics.get("cv_7d", 0.0)
+    sales7 = metrics.get("sales_7d", 0.0)
+    cpa = (spend / cv7) if cv7 > 0 else None
+    roas = (sales7 / spend) if spend > 0 else None
+
+    return [
+        fmt_value(metrics.get("impressions", 0)),
+        fmt_value(metrics.get("reach", 0)),
+        fmt_value(spend),
+        fmt_value(metrics.get("cv_1d", 0.0)),
+        fmt_value(cv7),
+        fmt_value(metrics.get("sales_1d", 0.0)),
+        fmt_value(sales7),
+        fmt_value(cpa),
+        fmt_value(roas),
+    ]
+
+
+def compute_monthly_aude_metric_row(metrics: Dict[str, Any]) -> List[Any]:
+    return compute_monthly_metric_row(metrics) + [
+        fmt_value(metrics.get("link_clicks", 0.0)),
+        fmt_value(metrics.get("clicks_all", 0.0)),
+        fmt_value(metrics.get("add_to_cart", 0.0)),
+        fmt_value(metrics.get("leads", 0.0)),
+        fmt_value(metrics.get("post_reactions", 0.0)),
+        fmt_value(metrics.get("post_comments", 0.0)),
+        fmt_value(metrics.get("post_saves", 0.0)),
+        fmt_value(metrics.get("post_shares", 0.0)),
+    ]
+
+
+def compute_monthly_ause_metric_row(metrics: Dict[str, Any]) -> List[Any]:
+    return [
+        fmt_value(metrics.get("impressions", 0)),
+        fmt_value(metrics.get("spend", 0.0)),
+        fmt_value(metrics.get("cv_1d", 0.0)),
+    ]
+
+
 def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
     def fmt(x: Any) -> Any:
         if x is None:
@@ -340,6 +418,153 @@ def build_ad_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
         row = [dim.get("campaign_name", ""), dim.get("adset_name", ""), k, dim.get("ad_name", "")]
         row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
         table.append(row)
+    return table
+
+
+def build_ad_monthly_table(rows: List[Dict]) -> List[List[Any]]:
+    header = ["Month", "campaign_name", "adset_name", "ad_id", "ad_name"] + ROW_METRIC_HEADERS
+    table = [header]
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (
+            r.get("date_start", ""),
+            r.get("campaign_name", ""),
+            r.get("adset_name", ""),
+            r.get("ad_name", ""),
+            r.get("ad_id", ""),
+        )
+    )
+
+    for r in sorted_rows:
+        table.append([
+            (r.get("date_start") or "")[:7],
+            r.get("campaign_name", ""),
+            r.get("adset_name", ""),
+            r.get("ad_id", ""),
+            r.get("ad_name", ""),
+            *compute_monthly_metric_row(extract_metrics(r)),
+        ])
+
+    return table
+
+
+def build_audience_monthly_table(
+    adset_rows: List[Dict], camp_rows: List[Dict], gender_rows: List[Dict], age_rows: List[Dict], plat_rows: List[Dict]
+) -> List[List[Any]]:
+    header = ["Month", "Category", "Campaign Name", "Breakdown"] + ROW_METRIC_HEADERS
+    table = [header]
+
+    def add_rows(rows: List[Dict], cat_name: str, camp_fn, detail_fn):
+        for r in sorted(rows, key=lambda x: (x.get("date_start", ""), camp_fn(x), detail_fn(x), x.get("campaign_id", ""), x.get("adset_id", ""))):
+            table.append([
+                (r.get("date_start") or "")[:7],
+                cat_name,
+                camp_fn(r),
+                detail_fn(r),
+                *compute_monthly_metric_row(extract_metrics(r)),
+            ])
+
+    add_rows(adset_rows, "AdSet", lambda r: r.get("campaign_name", ""), lambda r: r.get("adset_name", ""))
+    add_rows(camp_rows, "Campaign Total", lambda r: r.get("campaign_name", ""), lambda r: "Total")
+    add_rows(gender_rows, "Gender", lambda r: r.get("campaign_name", ""), lambda r: r.get("gender", ""))
+    add_rows(age_rows, "Age", lambda r: r.get("campaign_name", ""), lambda r: r.get("age", ""))
+    add_rows(plat_rows, "Platform", lambda r: r.get("campaign_name", ""), lambda r: r.get("publisher_platform", ""))
+
+    return table
+
+
+def build_audiencedetail_monthly_table(
+    adset_plat_rows: List[Dict],
+    adset_gen_age_rows: List[Dict],
+    plat_pos_dev_rows: List[Dict],
+) -> List[List[Any]]:
+    header = ["Month", "Category", "Detail1", "Detail2", "Detail3"] + ROW_METRIC_HEADERS + AUDE_ROW_EXTRA_METRIC_HEADERS
+    table = [header]
+
+    def add_rows(rows: List[Dict], cat_name: str, d1_fn, d2_fn, d3_fn):
+        for r in sorted(rows, key=lambda x: (x.get("date_start", ""), d1_fn(x), d2_fn(x), d3_fn(x), x.get("adset_id", ""))):
+            table.append([
+                (r.get("date_start") or "")[:7],
+                cat_name,
+                d1_fn(r),
+                d2_fn(r),
+                d3_fn(r),
+                *compute_monthly_aude_metric_row(extract_aude_metrics(r)),
+            ])
+
+    add_rows(
+        adset_plat_rows,
+        "AdSet x Platform",
+        lambda r: r.get("adset_name", ""),
+        lambda r: r.get("publisher_platform", ""),
+        lambda r: "",
+    )
+    add_rows(
+        adset_gen_age_rows,
+        "AdSet x Gender x Age",
+        lambda r: r.get("adset_name", ""),
+        lambda r: r.get("gender", ""),
+        lambda r: r.get("age", ""),
+    )
+    add_rows(
+        plat_pos_dev_rows,
+        "Platform x Position x Device",
+        lambda r: r.get("publisher_platform", ""),
+        lambda r: r.get("platform_position", ""),
+        lambda r: r.get("impression_device", ""),
+    )
+
+    return table
+
+
+def build_audiencesegment_monthly_table(rows: List[Dict], breakdown_key: str) -> List[List[Any]]:
+    header = ["Month", "Category", "Campaign Name", "Audience Segment"] + AUSE_ROW_METRIC_HEADERS
+    table = [header]
+
+    seg_totals: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: (
+            r.get("date_start", ""),
+            r.get("campaign_name", ""),
+            str(r.get(breakdown_key) or "__MISSING__"),
+            r.get("campaign_id", ""),
+        )
+    )
+
+    for r in sorted_rows:
+        month = (r.get("date_start") or "")[:7]
+        persona = r.get(breakdown_key)
+        if persona in (None, ""):
+            persona = "__MISSING__"
+        metrics = extract_metrics(r, "value", "value")
+
+        table.append([
+            month,
+            "Campaign",
+            r.get("campaign_name", ""),
+            persona,
+            *compute_monthly_ause_metric_row(metrics),
+        ])
+
+        total_key = (month, str(persona))
+        if total_key not in seg_totals:
+            seg_totals[total_key] = {"impressions": 0, "spend": 0.0, "cv_1d": 0.0}
+        seg_totals[total_key]["impressions"] += metrics.get("impressions", 0)
+        seg_totals[total_key]["spend"] += metrics.get("spend", 0.0)
+        seg_totals[total_key]["cv_1d"] += metrics.get("cv_1d", 0.0)
+
+    for month, persona in sorted(seg_totals.keys()):
+        table.append([
+            month,
+            "Total",
+            "All Campaigns Sum",
+            persona,
+            *compute_monthly_ause_metric_row(seg_totals[(month, persona)]),
+        ])
+
     return table
 
 
@@ -559,7 +784,10 @@ def main():
     rng = this_month_range_to_yesterday_jst()
     this_since, this_until = rng if rng else (None, None)
 
-    data_cache = {"last": {}, "this": {}}
+    compare_rng = compare_monthly_range_to_yesterday_jst()
+    compare_since, compare_until = compare_rng if compare_rng else (None, None)
+
+    data_cache = {"last": {}, "this": {}, "monthly": {}}
 
     def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
         cache_key = f"{level}_{','.join(fields)}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}_{str(attr_windows)}"
@@ -578,6 +806,20 @@ def main():
                         action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment
                     )
         return data_cache[period][cache_key]
+
+    def get_monthly_data(level: str, fields: List[str], breakdowns: Optional[List[str]] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
+        cache_key = f"{level}_{','.join(fields)}_{','.join(breakdowns) if breakdowns else 'none'}_monthly_{str(attr_windows)}"
+        if cache_key not in data_cache["monthly"]:
+            if not compare_since:
+                data_cache["monthly"][cache_key] = []
+            else:
+                data_cache["monthly"][cache_key] = meta_get_insights(
+                    api_version, m_token, m_act_id, fields,
+                    time_range={"since": compare_since, "until": compare_until},
+                    action_attribution_windows=attr_windows,
+                    level=level, breakdowns=breakdowns, time_increment="monthly"
+                )
+        return data_cache["monthly"][cache_key]
 
     for sheet_kind, worksheet_title in sheets_map.items():
         kind = str(sheet_kind).strip().upper()
@@ -613,10 +855,9 @@ def main():
 
         elif kind == "AD":
             fields = ["campaign_name", "adset_name", "ad_id", "ad_name", "spend", "reach", "impressions", "actions", "action_values"]
-            last_map = map_by_key(get_data("last", "ad", fields), lambda r: r.get("ad_id"))
-            this_map = map_by_key(get_data("this", "ad", fields), lambda r: r.get("ad_id"))
+            ad_rows = get_monthly_data("ad", fields)
 
-            table = build_ad_table(last_map, this_map)
+            table = build_ad_monthly_table(ad_rows)
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AD rows={len(table)-1}")
@@ -625,22 +866,13 @@ def main():
             adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions", "actions", "action_values"]
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
-            l_adset = map_by_key(get_data("last", "adset", adset_fields), lambda r: r.get("adset_id"))
-            t_adset = map_by_key(get_data("this", "adset", adset_fields), lambda r: r.get("adset_id"))
+            adset_rows = get_monthly_data("adset", adset_fields)
+            camp_rows = get_monthly_data("campaign", camp_fields)
+            gender_rows = get_monthly_data("campaign", camp_fields, ["gender"])
+            age_rows = get_monthly_data("campaign", camp_fields, ["age"])
+            plat_rows = get_monthly_data("campaign", camp_fields, ["publisher_platform"])
 
-            l_camp = map_by_key(get_data("last", "campaign", camp_fields), lambda r: r.get("campaign_id"))
-            t_camp = map_by_key(get_data("this", "campaign", camp_fields), lambda r: r.get("campaign_id"))
-
-            l_gender = map_by_key(get_data("last", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
-            t_gender = map_by_key(get_data("this", "campaign", camp_fields, ["gender"]), lambda r: f"{r.get('campaign_id')}_{r.get('gender')}")
-
-            l_age = map_by_key(get_data("last", "campaign", camp_fields, ["age"]), lambda r: f"{r.get('campaign_id')}_{r.get('age')}")
-            t_age = map_by_key(get_data("this", "campaign", camp_fields, ["age"]), lambda r: f"{r.get('campaign_id')}_{r.get('age')}")
-
-            l_plat = map_by_key(get_data("last", "campaign", camp_fields, ["publisher_platform"]), lambda r: f"{r.get('campaign_id')}_{r.get('publisher_platform')}")
-            t_plat = map_by_key(get_data("this", "campaign", camp_fields, ["publisher_platform"]), lambda r: f"{r.get('campaign_id')}_{r.get('publisher_platform')}")
-
-            table = build_audience_table(l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat)
+            table = build_audience_monthly_table(adset_rows, camp_rows, gender_rows, age_rows, plat_rows)
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
@@ -688,33 +920,18 @@ def main():
                     matched = {c: sample_action_map.get(c, 0) for c in candidates if c in sample_action_map}
                     print(f"[AUDE DEBUG] {tag}: sample_matches {metric_name}={matched or 'NO_MATCH'}")
 
-            l_adset_plat_rows = get_data("last", "adset", adset_fields, ["publisher_platform"])
-            t_adset_plat_rows = get_data("this", "adset", adset_fields, ["publisher_platform"])
-            l_adset_gen_age_rows = get_data("last", "adset", adset_fields, ["gender", "age"])
-            t_adset_gen_age_rows = get_data("this", "adset", adset_fields, ["gender", "age"])
-            l_plat_pos_dev_rows = get_data("last", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
-            t_plat_pos_dev_rows = get_data("this", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
+            adset_plat_rows = get_monthly_data("adset", adset_fields, ["publisher_platform"])
+            adset_gen_age_rows = get_monthly_data("adset", adset_fields, ["gender", "age"])
+            plat_pos_dev_rows = get_monthly_data("account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
 
-            aude_debug("last adset x platform", l_adset_plat_rows)
-            aude_debug("this adset x platform", t_adset_plat_rows)
-            aude_debug("last adset x gender x age", l_adset_gen_age_rows)
-            aude_debug("this adset x gender x age", t_adset_gen_age_rows)
-            aude_debug("last platform x position x device", l_plat_pos_dev_rows)
-            aude_debug("this platform x position x device", t_plat_pos_dev_rows)
+            aude_debug("monthly adset x platform", adset_plat_rows)
+            aude_debug("monthly adset x gender x age", adset_gen_age_rows)
+            aude_debug("monthly platform x position x device", plat_pos_dev_rows)
 
-            l_adset_plat = map_aude_by_key(l_adset_plat_rows, lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
-            t_adset_plat = map_aude_by_key(t_adset_plat_rows, lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
-
-            l_adset_gen_age = map_aude_by_key(l_adset_gen_age_rows, lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
-            t_adset_gen_age = map_aude_by_key(t_adset_gen_age_rows, lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
-
-            l_plat_pos_dev = map_aude_by_key(l_plat_pos_dev_rows, lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
-            t_plat_pos_dev = map_aude_by_key(t_plat_pos_dev_rows, lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
-
-            table = build_audiencedetail_table(
-                l_adset_plat, t_adset_plat,
-                l_adset_gen_age, t_adset_gen_age,
-                l_plat_pos_dev, t_plat_pos_dev
+            table = build_audiencedetail_monthly_table(
+                adset_plat_rows,
+                adset_gen_age_rows,
+                plat_pos_dev_rows
             )
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
@@ -776,43 +993,28 @@ def main():
                 return present > 0 and non_empty > 0
 
             chosen_bd = None
-            l_rows: List[Dict[str, Any]] = []
-            t_rows: List[Dict[str, Any]] = []
+            seg_rows: List[Dict[str, Any]] = []
 
             for bd in breakdown_candidates:
                 try:
-                    l_try = get_data("last", "campaign", camp_fields, [bd], attr_windows=seg_attr)
-                    t_try = get_data("this", "campaign", camp_fields, [bd], attr_windows=seg_attr)
+                    rows_try = get_monthly_data("campaign", camp_fields, [bd], attr_windows=seg_attr)
                 except RuntimeError as e:
                     print(f"[AUSE DEBUG] breakdown '{bd}' API error: {e}")
                     continue
 
-                ause_debug("last", l_try, bd)
-                ause_debug("this", t_try, bd)
+                ause_debug("monthly", rows_try, bd)
 
-                if has_real_breakdown(l_try, bd) or has_real_breakdown(t_try, bd):
+                if has_real_breakdown(rows_try, bd):
                     chosen_bd = bd
-                    l_rows, t_rows = l_try, t_try
+                    seg_rows = rows_try
                     break
 
             if not chosen_bd:
                 chosen_bd = breakdown_candidates[0]
-                l_rows = get_data("last", "campaign", camp_fields, [chosen_bd], attr_windows=seg_attr)
-                t_rows = get_data("this", "campaign", camp_fields, [chosen_bd], attr_windows=seg_attr)
-                ause_debug("last(fallback)", l_rows, chosen_bd)
-                ause_debug("this(fallback)", t_rows, chosen_bd)
+                seg_rows = get_monthly_data("campaign", camp_fields, [chosen_bd], attr_windows=seg_attr)
+                ause_debug("monthly(fallback)", seg_rows, chosen_bd)
 
-            def ause_map_key(r: Dict[str, Any]) -> str:
-                seg = r.get(chosen_bd)
-                if seg in (None, ""):
-                    seg = "__MISSING__"
-                cid = r.get("campaign_id") or "__NO_CAMP__"
-                return f"{cid}_{seg}"
-
-            l_camp_seg = map_by_key(l_rows, ause_map_key, is_ause=True)
-            t_camp_seg = map_by_key(t_rows, ause_map_key, is_ause=True)
-
-            table = build_audiencesegment_table(l_camp_seg, t_camp_seg, chosen_bd)
+            table = build_audiencesegment_monthly_table(seg_rows, chosen_bd)
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCESEGMENT rows={len(table)-1} (bd={chosen_bd})")
