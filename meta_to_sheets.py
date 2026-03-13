@@ -34,21 +34,26 @@ METRIC_HEADERS = [
     "this_month_cpa_click_7d", "this_month_roas_click_7d",
 ]
 
-# auseシート専用のヘッダー
+# auseシート専用のヘッダー（Imp, Spend, CVのみ）
 AUSE_METRIC_HEADERS = [
-    "last_month_impressions", "last_month_spend", "last_month_cv",
+    "last_month_impressions", "last_month_spend",
+    "last_month_cv",
+    "this_month_impressions", "this_month_spend",
+    "this_month_cv",
+]
+
+AUDE_EXTRA_METRIC_HEADERS = [
     "last_month_link_clicks", "last_month_clicks_all",
     "last_month_add_to_cart", "last_month_leads",
     "last_month_post_reactions", "last_month_post_comments",
     "last_month_post_saves", "last_month_post_shares",
-    "this_month_impressions", "this_month_spend", "this_month_cv",
     "this_month_link_clicks", "this_month_clicks_all",
     "this_month_add_to_cart", "this_month_leads",
     "this_month_post_reactions", "this_month_post_comments",
     "this_month_post_saves", "this_month_post_shares",
 ]
 
-AUSE_ACTION_TYPE_CANDIDATES = {
+AUDE_ACTION_TYPE_CANDIDATES = {
     "add_to_cart": [
         "offsite_conversion.fb_pixel_add_to_cart",
         "omni_add_to_cart",
@@ -66,14 +71,6 @@ AUSE_ACTION_TYPE_CANDIDATES = {
     "post_saves": ["post_save"],
     "post_shares": ["post_share", "post"],
 }
-
-AUSE_SUM_KEYS = [
-    "impressions", "spend", "cv_1d", "cv_7d",
-    "link_clicks", "clicks_all",
-    "add_to_cart", "leads",
-    "post_reactions", "post_comments",
-    "post_saves", "post_shares",
-]
 
 
 def _act_id_normalize(m_act_id: str) -> str:
@@ -200,24 +197,31 @@ def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actio
 
 
 def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
-    actions = row.get("actions", [])
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
         "impressions": int(row.get("impressions") or 0),
-        "cv_1d": get_action_value(actions, TARGET_ACTION_CV, attr_window_cv),
-        "cv_7d": get_action_value(actions, TARGET_ACTION_CV, attr_window_cv_click),
+        "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv),
+        "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv_click),
         "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv),
         "sales_7d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv_click),
+    }
+
+
+def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
+    metrics = extract_metrics(row, attr_window_cv, attr_window_cv_click)
+    actions = row.get("actions", [])
+    metrics.update({
         "link_clicks": float(row.get("inline_link_clicks") or 0.0),
         "clicks_all": float(row.get("clicks") or 0.0),
-        "add_to_cart": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["add_to_cart"], attr_window_cv_click),
-        "leads": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["leads"], attr_window_cv_click),
-        "post_reactions": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["post_reactions"], attr_window_cv_click),
-        "post_comments": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["post_comments"], attr_window_cv_click),
-        "post_saves": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["post_saves"], attr_window_cv_click),
-        "post_shares": get_action_value_multi(actions, AUSE_ACTION_TYPE_CANDIDATES["post_shares"], attr_window_cv_click),
-    }
+        "add_to_cart": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["add_to_cart"], attr_window_cv_click),
+        "leads": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["leads"], attr_window_cv_click),
+        "post_reactions": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_reactions"], attr_window_cv_click),
+        "post_comments": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_comments"], attr_window_cv_click),
+        "post_saves": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_saves"], attr_window_cv_click),
+        "post_shares": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_shares"], attr_window_cv_click),
+    })
+    return metrics
 
 
 def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any], is_ause: bool = False) -> Dict[str, Dict]:
@@ -228,6 +232,16 @@ def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any], is_ause: bool 
             continue
         metrics = extract_metrics(r, "value", "value") if is_ause else extract_metrics(r)
         res[k] = {"dim": r, "metrics": metrics}
+    return res
+
+
+def map_aude_by_key(rows: List[Dict], key_func: Callable[[Dict], Any]) -> Dict[str, Dict]:
+    res = {}
+    for r in rows:
+        k = key_func(r)
+        if not k:
+            continue
+        res[k] = {"dim": r, "metrics": extract_aude_metrics(r)}
     return res
 
 
@@ -262,6 +276,28 @@ def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
     ]
 
 
+def compute_aude_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
+    def fmt(x: Any) -> Any:
+        if x is None:
+            return ""
+        try:
+            return round(float(x), 6)
+        except:
+            return ""
+
+    base = compute_metric_row(ld, td)
+    return base + [
+        fmt(ld.get("link_clicks", 0.0)), fmt(ld.get("clicks_all", 0.0)),
+        fmt(ld.get("add_to_cart", 0.0)), fmt(ld.get("leads", 0.0)),
+        fmt(ld.get("post_reactions", 0.0)), fmt(ld.get("post_comments", 0.0)),
+        fmt(ld.get("post_saves", 0.0)), fmt(ld.get("post_shares", 0.0)),
+        fmt(td.get("link_clicks", 0.0)), fmt(td.get("clicks_all", 0.0)),
+        fmt(td.get("add_to_cart", 0.0)), fmt(td.get("leads", 0.0)),
+        fmt(td.get("post_reactions", 0.0)), fmt(td.get("post_comments", 0.0)),
+        fmt(td.get("post_saves", 0.0)), fmt(td.get("post_shares", 0.0)),
+    ]
+
+
 def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
     def fmt(x: Any) -> Any:
         if x is None:
@@ -273,37 +309,13 @@ def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]
 
     l_imp, l_spend = ld.get("impressions", 0), ld.get("spend", 0.0)
     l_cv_1d = ld.get("cv_1d", 0.0)
-    l_link_clicks = ld.get("link_clicks", 0.0)
-    l_clicks_all = ld.get("clicks_all", 0.0)
-    l_add_to_cart = ld.get("add_to_cart", 0.0)
-    l_leads = ld.get("leads", 0.0)
-    l_post_reactions = ld.get("post_reactions", 0.0)
-    l_post_comments = ld.get("post_comments", 0.0)
-    l_post_saves = ld.get("post_saves", 0.0)
-    l_post_shares = ld.get("post_shares", 0.0)
 
     t_imp, t_spend = td.get("impressions", 0), td.get("spend", 0.0)
     t_cv_1d = td.get("cv_1d", 0.0)
-    t_link_clicks = td.get("link_clicks", 0.0)
-    t_clicks_all = td.get("clicks_all", 0.0)
-    t_add_to_cart = td.get("add_to_cart", 0.0)
-    t_leads = td.get("leads", 0.0)
-    t_post_reactions = td.get("post_reactions", 0.0)
-    t_post_comments = td.get("post_comments", 0.0)
-    t_post_saves = td.get("post_saves", 0.0)
-    t_post_shares = td.get("post_shares", 0.0)
 
     return [
         fmt(l_imp), fmt(l_spend), fmt(l_cv_1d),
-        fmt(l_link_clicks), fmt(l_clicks_all),
-        fmt(l_add_to_cart), fmt(l_leads),
-        fmt(l_post_reactions), fmt(l_post_comments),
-        fmt(l_post_saves), fmt(l_post_shares),
-        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d),
-        fmt(t_link_clicks), fmt(t_clicks_all),
-        fmt(t_add_to_cart), fmt(t_leads),
-        fmt(t_post_reactions), fmt(t_post_comments),
-        fmt(t_post_saves), fmt(t_post_shares),
+        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d)
     ]
 
 
@@ -436,7 +448,7 @@ def build_audiencedetail_table(
     l_adset_gen_age, t_adset_gen_age,
     l_plat_pos_dev, t_plat_pos_dev
 ) -> List[List[Any]]:
-    header = ["Category", "Detail1", "Detail2", "Detail3"] + METRIC_HEADERS
+    header = ["Category", "Detail1", "Detail2", "Detail3"] + METRIC_HEADERS + AUDE_EXTRA_METRIC_HEADERS
     table = [header]
 
     def add_rows(last_m, this_m, cat_name, d1_fn, d2_fn, d3_fn):
@@ -444,7 +456,7 @@ def build_audiencedetail_table(
             ld, td = last_m.get(k, {}), this_m.get(k, {})
             dim = td.get("dim") or ld.get("dim") or {}
             row = [cat_name, d1_fn(k, dim), d2_fn(k, dim), d3_fn(k, dim)]
-            row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
+            row.extend(compute_aude_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
             table.append(row)
 
     add_rows(l_adset_plat, t_adset_plat, "AdSet x Platform",
@@ -473,10 +485,15 @@ def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[L
 
     def add_to_totals(period, persona, metrics):
         if persona not in seg_totals[period]:
-            seg_totals[period][persona] = {k: 0.0 for k in AUSE_SUM_KEYS}
+            seg_totals[period][persona] = {
+                "impressions": 0, "spend": 0.0,
+                "cv_1d": 0.0, "cv_7d": 0.0
+            }
         t = seg_totals[period][persona]
-        for key in AUSE_SUM_KEYS:
-            t[key] += metrics.get(key, 0.0)
+        t["impressions"] += metrics.get("impressions", 0)
+        t["spend"] += metrics.get("spend", 0.0)
+        t["cv_1d"] += metrics.get("cv_1d", 0.0)
+        t["cv_7d"] += metrics.get("cv_7d", 0.0)
 
     for k in sorted(set(l_camp_seg.keys()) | set(t_camp_seg.keys())):
         ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
@@ -629,17 +646,70 @@ def main():
             print(f"OK: wrote AUDIENCE rows={len(table)-1}")
 
         elif kind == "AUDIENCEDETAIL":
-            adset_fields = ["campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions", "actions", "action_values"]
-            acc_fields = ["spend", "reach", "impressions", "actions", "action_values"]
+            adset_fields = [
+                "campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions",
+                "clicks", "inline_link_clicks", "actions", "action_values"
+            ]
+            acc_fields = ["spend", "reach", "impressions", "clicks", "inline_link_clicks", "actions", "action_values"]
 
-            l_adset_plat = map_by_key(get_data("last", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
-            t_adset_plat = map_by_key(get_data("this", "adset", adset_fields, ["publisher_platform"]), lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
+            def aude_debug(tag: str, rows: List[Dict[str, Any]]) -> None:
+                print(f"[AUDE DEBUG] {tag}: rows={len(rows)}")
+                if not rows:
+                    return
 
-            l_adset_gen_age = map_by_key(get_data("last", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
-            t_adset_gen_age = map_by_key(get_data("this", "adset", adset_fields, ["gender", "age"]), lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
+                sample = rows[0]
+                action_type_counts: Dict[str, int] = {}
+                for r in rows:
+                    acts = r.get("actions")
+                    if isinstance(acts, list):
+                        for a in acts:
+                            if not isinstance(a, dict):
+                                continue
+                            at = str(a.get("action_type") or "__NONE__")
+                            action_type_counts[at] = action_type_counts.get(at, 0) + 1
 
-            l_plat_pos_dev = map_by_key(get_data("last", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
-            t_plat_pos_dev = map_by_key(get_data("this", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"]), lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
+                top_action_types = sorted(action_type_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+                print(f"[AUDE DEBUG] {tag}: action_type top15={top_action_types}")
+                print(
+                    f"[AUDE DEBUG] {tag}: sample direct metrics "
+                    f"clicks={sample.get('clicks', 0)} inline_link_clicks={sample.get('inline_link_clicks', 0)}"
+                )
+
+                acts = sample.get("actions") if isinstance(sample.get("actions"), list) else []
+                sample_action_map: Dict[str, Any] = {}
+                for a in acts:
+                    if not isinstance(a, dict):
+                        continue
+                    at = a.get("action_type")
+                    if at is not None:
+                        sample_action_map[str(at)] = a.get("7d_click", a.get("value", 0))
+
+                for metric_name, candidates in AUDE_ACTION_TYPE_CANDIDATES.items():
+                    matched = {c: sample_action_map.get(c, 0) for c in candidates if c in sample_action_map}
+                    print(f"[AUDE DEBUG] {tag}: sample_matches {metric_name}={matched or 'NO_MATCH'}")
+
+            l_adset_plat_rows = get_data("last", "adset", adset_fields, ["publisher_platform"])
+            t_adset_plat_rows = get_data("this", "adset", adset_fields, ["publisher_platform"])
+            l_adset_gen_age_rows = get_data("last", "adset", adset_fields, ["gender", "age"])
+            t_adset_gen_age_rows = get_data("this", "adset", adset_fields, ["gender", "age"])
+            l_plat_pos_dev_rows = get_data("last", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
+            t_plat_pos_dev_rows = get_data("this", "account", acc_fields, ["publisher_platform", "platform_position", "impression_device"])
+
+            aude_debug("last adset x platform", l_adset_plat_rows)
+            aude_debug("this adset x platform", t_adset_plat_rows)
+            aude_debug("last adset x gender x age", l_adset_gen_age_rows)
+            aude_debug("this adset x gender x age", t_adset_gen_age_rows)
+            aude_debug("last platform x position x device", l_plat_pos_dev_rows)
+            aude_debug("this platform x position x device", t_plat_pos_dev_rows)
+
+            l_adset_plat = map_aude_by_key(l_adset_plat_rows, lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
+            t_adset_plat = map_aude_by_key(t_adset_plat_rows, lambda r: f"{r.get('adset_id')}_{r.get('publisher_platform')}")
+
+            l_adset_gen_age = map_aude_by_key(l_adset_gen_age_rows, lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
+            t_adset_gen_age = map_aude_by_key(t_adset_gen_age_rows, lambda r: f"{r.get('adset_id')}_{r.get('gender')}_{r.get('age')}")
+
+            l_plat_pos_dev = map_aude_by_key(l_plat_pos_dev_rows, lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
+            t_plat_pos_dev = map_aude_by_key(t_plat_pos_dev_rows, lambda r: f"{r.get('publisher_platform')}_{r.get('platform_position')}_{r.get('impression_device')}")
 
             table = build_audiencedetail_table(
                 l_adset_plat, t_adset_plat,
@@ -652,10 +722,7 @@ def main():
 
         # --- 修正: auseシート取得時のみ breakdown候補を検証し、actionsログで原因特定できるようにする ---
         elif kind == "AUDIENCESEGMENT":
-            camp_fields = [
-                "campaign_id", "campaign_name", "spend", "reach", "impressions",
-                "clicks", "inline_link_clicks", "actions", "action_values"
-            ]
+            camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
             # ログの許可リストに基づき "default" を指定（維持）
             seg_attr = ["default"]
@@ -671,7 +738,6 @@ def main():
                 sample = rows[0]
                 counts: Dict[str, int] = {}
                 missing = 0
-                action_type_counts: Dict[str, int] = {}
                 for r in rows:
                     if bd not in r:
                         missing += 1
@@ -680,41 +746,22 @@ def main():
                         v = r.get(bd)
                     counts[str(v)] = counts.get(str(v), 0) + 1
 
-                    acts = r.get("actions")
-                    if isinstance(acts, list):
-                        for a in acts:
-                            if not isinstance(a, dict):
-                                continue
-                            at = str(a.get("action_type") or "__NONE__")
-                            action_type_counts[at] = action_type_counts.get(at, 0) + 1
-
                 top3 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:3]
                 print(f"[AUSE DEBUG] {tag}: bd top3={top3} missing={missing}/{len(rows)}")
 
-                top_action_types = sorted(action_type_counts.items(), key=lambda x: x[1], reverse=True)[:15]
-                print(f"[AUSE DEBUG] {tag}: action_type top15={top_action_types}")
-                print(
-                    f"[AUSE DEBUG] {tag}: sample direct metrics "
-                    f"clicks={sample.get('clicks', 0)} inline_link_clicks={sample.get('inline_link_clicks', 0)}"
-                )
+                acts = sample.get("actions")
+                cv_val = 0
+                sales_val = 0
+                if isinstance(acts, list):
+                    for a in acts:
+                        if not isinstance(a, dict):
+                            continue
+                        if a.get("action_type") == TARGET_ACTION_CV:
+                            cv_val = a.get("value", 0)
+                        elif a.get("action_type") == TARGET_ACTION_SALES:
+                            sales_val = a.get("value", 0)
 
-                acts = sample.get("actions") if isinstance(sample.get("actions"), list) else []
-                sample_action_map: Dict[str, Any] = {}
-                for a in acts:
-                    if not isinstance(a, dict):
-                        continue
-                    at = a.get("action_type")
-                    if at is not None:
-                        sample_action_map[str(at)] = a.get("value", 0)
-
-                print(
-                    f"[AUSE DEBUG] {tag}: sample_action_values "
-                    f"cv={sample_action_map.get(TARGET_ACTION_CV, 0)} sales={sample_action_map.get(TARGET_ACTION_SALES, 0)}"
-                )
-
-                for metric_name, candidates in AUSE_ACTION_TYPE_CANDIDATES.items():
-                    matched = {c: sample_action_map.get(c, 0) for c in candidates if c in sample_action_map}
-                    print(f"[AUSE DEBUG] {tag}: sample_matches {metric_name}={matched or 'NO_MATCH'}")
+                print(f"[AUSE DEBUG] {tag}: sample_action_values cv={cv_val} sales={sales_val}")
 
             def has_real_breakdown(rows: List[Dict[str, Any]], bd: str) -> bool:
                 if not rows:
