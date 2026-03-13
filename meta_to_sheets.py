@@ -53,7 +53,6 @@ def meta_get_insights(
     action_attribution_windows: Optional[List[str]] = None,
     level: str = "campaign", breakdowns: Optional[List[str]] = None,
     time_increment: Optional[str] = None,
-    action_report_time: Optional[str] = None,
     limit: int = 500, max_pages: int = 50,
 ) -> List[Dict[str, Any]]:
     
@@ -81,9 +80,6 @@ def meta_get_insights(
     if time_increment:
         params["time_increment"] = time_increment
 
-    if action_report_time:
-        params["action_report_time"] = action_report_time
-
     out: List[Dict[str, Any]] = []
     pages = 0
 
@@ -110,12 +106,16 @@ def meta_get_insights(
     return out
 
 def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str, attr_window: str) -> float:
-    if not actions: return 0.0
+    if not actions:
+        return 0.0
     for a in actions:
         if a.get("action_type") == target_action:
-            # default指定時は 'value' キーに数値が入る
-            try: return float(a.get(attr_window, a.get('value', 0)))
-            except: return 0.0
+            try:
+                if attr_window == "value":
+                    return float(a.get("value", 0))
+                return float(a.get(attr_window, 0))
+            except:
+                return 0.0
     return 0.0
 
 def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
@@ -369,22 +369,13 @@ def main():
 
     data_cache = {"last": {}, "this": {}}
     
-    def get_data(
-        period: str,
-        level: str,
-        fields: List[str],
-        breakdowns: Optional[List[str]] = None,
-        time_increment: Optional[str] = None,
-        attr_windows: Optional[List[str]] = ["1d_view", "7d_click"],
-        action_report_time: Optional[str] = None
-    ) -> List[Dict]:
-        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}_{str(attr_windows)}_{action_report_time or 'none'}"
+    def get_data(period: str, level: str, fields: List[str], breakdowns: Optional[List[str]] = None, time_increment: Optional[str] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
+        cache_key = f"{level}_{','.join(breakdowns) if breakdowns else 'none'}_{time_increment or 'none'}_{str(attr_windows)}"
         if cache_key not in data_cache[period]:
             if period == "last":
                 data_cache[period][cache_key] = meta_get_insights(
                     api_version, m_token, m_act_id, fields, date_preset="last_month",
-                    action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment,
-                    action_report_time=action_report_time
+                    action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment
                 )
             else:
                 if not this_since:
@@ -392,8 +383,7 @@ def main():
                 else:
                     data_cache[period][cache_key] = meta_get_insights(
                         api_version, m_token, m_act_id, fields, time_range={"since": this_since, "until": this_until},
-                        action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment,
-                        action_report_time=action_report_time
+                        action_attribution_windows=attr_windows, level=level, breakdowns=breakdowns, time_increment=time_increment
                     )
         return data_cache[period][cache_key]
 
@@ -413,8 +403,8 @@ def main():
             
         elif kind == "DAILY":
             fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
-            last_daily = get_data("last", "campaign", fields, time_increment="1", action_report_time="conversion")
-            this_daily = get_data("this", "campaign", fields, time_increment="1", action_report_time="conversion")
+            last_daily = get_data("last", "campaign", fields, time_increment="1")
+            this_daily = get_data("this", "campaign", fields, time_increment="1")
             
             table = build_daily_table(last_daily, this_daily)
             for s_id in s_id_list:
