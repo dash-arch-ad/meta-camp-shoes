@@ -413,8 +413,8 @@ def main():
             
         elif kind == "DAILY":
             fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
-            last_daily = get_data("last", "campaign", fields, time_increment="1", action_report_time="impression")
-            this_daily = get_data("this", "campaign", fields, time_increment="1", action_report_time="impression")
+            last_daily = get_data("last", "campaign", fields, time_increment="1", action_report_time="conversion")
+            this_daily = get_data("this", "campaign", fields, time_increment="1", action_report_time="conversion")
             
             table = build_daily_table(last_daily, this_daily)
             for s_id in s_id_list:
