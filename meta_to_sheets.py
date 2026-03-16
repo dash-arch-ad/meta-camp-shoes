@@ -17,7 +17,7 @@ TARGET_ACTION_CV = "offsite_conversion.fb_pixel_purchase"
 TARGET_ACTION_SALES = "purchase"
 
 MONTHLY_METRIC_HEADERS = [
-    "Month", "campaign_name",
+    "Month", "campaign_name", "reach",
     "cv_view_1d", "cv_click_7d",
     "sales_view_1d", "sales_click_7d",
     "cpa_click_7d", "roas_click_7d",
@@ -326,7 +326,7 @@ def compute_monthly_aude_metric_row(metrics: Dict[str, Any]) -> List[Any]:
         fmt_value(metrics.get("cv_1d", 0.0)),
         fmt_value(cv7),
         fmt_value(metrics.get("sales_1d", 0.0)),
-        fmt_value(sales7),
+        fmt_value(metrics.get("sales_7d", 0.0)),
         fmt_value(cpa),
         fmt_value(roas),
     ]
@@ -657,6 +657,7 @@ def build_monthly_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
         table.append([
             month,
             r.get("campaign_name", ""),
+            fmt(m["reach"]),
             fmt(m["cv_1d"]),
             fmt(m["cv_7d"]),
             fmt(m["sales_1d"]),
@@ -849,7 +850,7 @@ def main():
         print(f"Processing {kind} to sheet '{worksheet_title}'...")
 
         if kind == "MONTHLY":
-            fields = ["campaign_id", "campaign_name", "spend", "actions", "action_values"]
+            fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
             monthly_rng = monthly_range_to_yesterday_jst()
             monthly_rows = []
             if monthly_rng:
