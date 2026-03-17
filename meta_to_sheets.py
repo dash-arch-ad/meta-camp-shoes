@@ -1,7 +1,7 @@
 import os
 import json
 import time
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from google.oauth2.service_account import Credentials
@@ -21,36 +21,6 @@ MONTHLY_METRIC_HEADERS = [
     "cv_view_1d", "cv_click_7d",
     "sales_view_1d", "sales_click_7d",
     "cpa_click_7d", "roas_click_7d",
-]
-
-METRIC_HEADERS = [
-    "last_month_impressions", "last_month_reach", "last_month_spend",
-    "last_month_cv_view_1d", "last_month_cv_click_7d",
-    "last_month_sales_view_1d", "last_month_sales_click_7d",
-    "last_month_cpa_click_7d", "last_month_roas_click_7d",
-    "this_month_impressions", "this_month_reach", "this_month_spend",
-    "this_month_cv_view_1d", "this_month_cv_click_7d",
-    "this_month_sales_view_1d", "this_month_sales_click_7d",
-    "this_month_cpa_click_7d", "this_month_roas_click_7d",
-]
-
-# auseシート専用のヘッダー（Imp, Spend, CVのみ）
-AUSE_METRIC_HEADERS = [
-    "last_month_impressions", "last_month_spend",
-    "last_month_cv",
-    "this_month_impressions", "this_month_spend",
-    "this_month_cv",
-]
-
-AUDE_EXTRA_METRIC_HEADERS = [
-    "last_month_link_clicks", "last_month_clicks_all",
-    "last_month_add_to_cart", "last_month_leads",
-    "last_month_post_reactions", "last_month_post_comments",
-    "last_month_post_saves", "last_month_post_shares",
-    "this_month_link_clicks", "this_month_clicks_all",
-    "this_month_add_to_cart", "this_month_leads",
-    "this_month_post_reactions", "this_month_post_comments",
-    "this_month_post_saves", "this_month_post_shares",
 ]
 
 ROW_METRIC_HEADERS = [
@@ -253,27 +223,6 @@ def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", a
     return metrics
 
 
-def map_by_key(rows: List[Dict], key_func: Callable[[Dict], Any], is_ause: bool = False) -> Dict[str, Dict]:
-    res = {}
-    for r in rows:
-        k = key_func(r)
-        if not k:
-            continue
-        metrics = extract_metrics(r, "value", "value") if is_ause else extract_metrics(r)
-        res[k] = {"dim": r, "metrics": metrics}
-    return res
-
-
-def map_aude_by_key(rows: List[Dict], key_func: Callable[[Dict], Any]) -> Dict[str, Dict]:
-    res = {}
-    for r in rows:
-        k = key_func(r)
-        if not k:
-            continue
-        res[k] = {"dim": r, "metrics": extract_aude_metrics(r)}
-    return res
-
-
 def fmt_value(x: Any) -> Any:
     if x is None:
         return ""
@@ -340,104 +289,6 @@ def compute_monthly_ause_metric_row(metrics: Dict[str, Any]) -> List[Any]:
     ]
 
 
-def compute_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
-    def fmt(x: Any) -> Any:
-        if x is None:
-            return ""
-        try:
-            return round(float(x), 6)
-        except:
-            return ""
-
-    l_imp, l_reach, l_spend = ld.get("impressions", 0), ld.get("reach", 0), ld.get("spend", 0.0)
-    l_cv_1d, l_cv_7d = ld.get("cv_1d", 0.0), ld.get("cv_7d", 0.0)
-    l_sales_1d, l_sales_7d = ld.get("sales_1d", 0.0), ld.get("sales_7d", 0.0)
-    l_cpa = (l_spend / l_cv_7d) if l_cv_7d > 0 else None
-    l_roas = (l_sales_7d / l_spend) if l_spend > 0 else None
-
-    t_imp, t_reach, t_spend = td.get("impressions", 0), td.get("reach", 0), td.get("spend", 0.0)
-    t_cv_1d, t_cv_7d = td.get("cv_1d", 0.0), td.get("cv_7d", 0.0)
-    t_sales_1d, t_sales_7d = td.get("sales_1d", 0.0), td.get("sales_7d", 0.0)
-    t_cpa = (t_spend / t_cv_7d) if t_cv_7d > 0 else None
-    t_roas = (t_sales_7d / t_spend) if t_spend > 0 else None
-
-    return [
-        fmt(l_imp), fmt(l_reach), fmt(l_spend),
-        fmt(l_cv_1d), fmt(l_cv_7d), fmt(l_sales_1d), fmt(l_sales_7d),
-        fmt(l_cpa), fmt(l_roas),
-        fmt(t_imp), fmt(t_reach), fmt(t_spend),
-        fmt(t_cv_1d), fmt(t_cv_7d), fmt(t_sales_1d), fmt(t_sales_7d),
-        fmt(t_cpa), fmt(t_roas),
-    ]
-
-
-def compute_aude_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
-    def fmt(x: Any) -> Any:
-        if x is None:
-            return ""
-        try:
-            return round(float(x), 6)
-        except:
-            return ""
-
-    base = compute_metric_row(ld, td)
-    return base + [
-        fmt(ld.get("link_clicks", 0.0)), fmt(ld.get("clicks_all", 0.0)), fmt(ld.get("purchase", 0.0)),
-        fmt(ld.get("add_to_cart", 0.0)), fmt(ld.get("leads", 0.0)),
-        fmt(ld.get("post_reactions", 0.0)), fmt(ld.get("post_comments", 0.0)),
-        fmt(ld.get("post_saves", 0.0)), fmt(ld.get("post_shares", 0.0)),
-        fmt(td.get("link_clicks", 0.0)), fmt(td.get("clicks_all", 0.0)), fmt(td.get("purchase", 0.0)),
-        fmt(td.get("add_to_cart", 0.0)), fmt(td.get("leads", 0.0)),
-        fmt(td.get("post_reactions", 0.0)), fmt(td.get("post_comments", 0.0)),
-        fmt(td.get("post_saves", 0.0)), fmt(td.get("post_shares", 0.0)),
-    ]
-
-
-def compute_ause_metric_row(ld: Dict[str, Any], td: Dict[str, Any]) -> List[Any]:
-    def fmt(x: Any) -> Any:
-        if x is None:
-            return ""
-        try:
-            return round(float(x), 6)
-        except:
-            return ""
-
-    l_imp, l_spend = ld.get("impressions", 0), ld.get("spend", 0.0)
-    l_cv_1d = ld.get("cv_1d", 0.0)
-
-    t_imp, t_spend = td.get("impressions", 0), td.get("spend", 0.0)
-    t_cv_1d = td.get("cv_1d", 0.0)
-
-    return [
-        fmt(l_imp), fmt(l_spend), fmt(l_cv_1d),
-        fmt(t_imp), fmt(t_spend), fmt(t_cv_1d)
-    ]
-
-
-def build_campaign_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
-    header = ["campaign_id", "campaign_name"] + METRIC_HEADERS
-    table = [header]
-    for k in sorted(set(last_map.keys()) | set(this_map.keys())):
-        ld, td = last_map.get(k, {}), this_map.get(k, {})
-        dim = td.get("dim") or ld.get("dim") or {}
-        row = [k, dim.get("campaign_name", "")]
-        row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
-        table.append(row)
-    return table
-
-
-def build_ad_table(last_map: Dict, this_map: Dict) -> List[List[Any]]:
-    header = ["campaign_name", "adset_name", "ad_id", "ad_name"] + METRIC_HEADERS
-    table = [header]
-    for k in sorted(set(last_map.keys()) | set(this_map.keys())):
-        ld, td = last_map.get(k, {}), this_map.get(k, {})
-        dim = td.get("dim") or ld.get("dim") or {}
-        row = [dim.get("campaign_name", ""), dim.get("adset_name", ""), k, dim.get("ad_name", "")]
-        row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
-        table.append(row)
-    return table
-
-
 def build_ad_monthly_table(rows: List[Dict]) -> List[List[Any]]:
     header = ["Month", "campaign_name", "adset_name", "ad_id", "ad_name"] + ROW_METRIC_HEADERS
     table = [header]
@@ -497,7 +348,7 @@ def build_audiencedetail_monthly_table(
     plat_pos_dev_rows: List[Dict],
 ) -> List[List[Any]]:
     header = [
-        "Month", "Category", "Detail1", "Detail2", "Detail3",
+        "Month", "Category", "campaign_name", "Detail1", "Detail2", "Detail3",
         "impressions", "reach", "spend",
         "link_clicks", "clicks_all", "purchase", "add_to_cart", "leads",
         "post_reactions", "post_comments", "post_saves", "post_shares",
@@ -505,11 +356,12 @@ def build_audiencedetail_monthly_table(
     ]
     table = [header]
 
-    def add_rows(rows: List[Dict], cat_name: str, d1_fn, d2_fn, d3_fn):
+    def add_rows(rows: List[Dict], cat_name: str, campaign_name_fn, d1_fn, d2_fn, d3_fn):
         for r in sorted(rows, key=lambda x: (x.get("date_start", ""), d1_fn(x), d2_fn(x), d3_fn(x), x.get("adset_id", ""))):
             table.append([
                 (r.get("date_start") or "")[:7],
                 cat_name,
+                campaign_name_fn(r),
                 d1_fn(r),
                 d2_fn(r),
                 d3_fn(r),
@@ -519,6 +371,7 @@ def build_audiencedetail_monthly_table(
     add_rows(
         adset_plat_rows,
         "AdSet x Platform",
+        lambda r: r.get("campaign_name", ""),
         lambda r: r.get("adset_name", ""),
         lambda r: r.get("publisher_platform", ""),
         lambda r: "",
@@ -526,6 +379,7 @@ def build_audiencedetail_monthly_table(
     add_rows(
         adset_gen_age_rows,
         "AdSet x Gender x Age",
+        lambda r: r.get("campaign_name", ""),
         lambda r: r.get("adset_name", ""),
         lambda r: r.get("gender", ""),
         lambda r: r.get("age", ""),
@@ -533,6 +387,7 @@ def build_audiencedetail_monthly_table(
     add_rows(
         plat_pos_dev_rows,
         "Platform x Position x Device Platform",
+        lambda r: "",
         lambda r: r.get("publisher_platform", ""),
         lambda r: r.get("platform_position", ""),
         lambda r: r.get("device_platform", ""),
@@ -665,106 +520,6 @@ def build_monthly_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
             fmt(cpa),
             fmt(roas),
         ])
-
-    return table
-
-
-def build_audience_table(
-    l_adset, t_adset, l_camp, t_camp, l_gender, t_gender, l_age, t_age, l_plat, t_plat
-) -> List[List[Any]]:
-    header = ["Category", "Campaign Name", "Breakdown"] + METRIC_HEADERS
-    table = [header]
-
-    def add_rows(last_m, this_m, cat_name, camp_fn, detail_fn):
-        for k in sorted(set(last_m.keys()) | set(this_m.keys())):
-            ld, td = last_m.get(k, {}), this_m.get(k, {})
-            dim = td.get("dim") or ld.get("dim") or {}
-            row = [cat_name, camp_fn(k, dim), detail_fn(k, dim)]
-            row.extend(compute_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
-            table.append(row)
-
-    add_rows(l_adset, t_adset, "AdSet", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("adset_name", ""))
-    add_rows(l_camp, t_camp, "Campaign Total", lambda k, d: d.get("campaign_name", ""), lambda k, d: "Total")
-    add_rows(l_gender, t_gender, "Gender", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("gender", ""))
-    add_rows(l_age, t_age, "Age", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("age", ""))
-    add_rows(l_plat, t_plat, "Platform", lambda k, d: d.get("campaign_name", ""), lambda k, d: d.get("publisher_platform", ""))
-
-    return table
-
-
-def build_audiencedetail_table(
-    l_adset_plat, t_adset_plat,
-    l_adset_gen_age, t_adset_gen_age,
-    l_plat_pos_dev, t_plat_pos_dev
-) -> List[List[Any]]:
-    header = ["Category", "Detail1", "Detail2", "Detail3"] + METRIC_HEADERS + AUDE_EXTRA_METRIC_HEADERS
-    table = [header]
-
-    def add_rows(last_m, this_m, cat_name, d1_fn, d2_fn, d3_fn):
-        for k in sorted(set(last_m.keys()) | set(this_m.keys())):
-            ld, td = last_m.get(k, {}), this_m.get(k, {})
-            dim = td.get("dim") or ld.get("dim") or {}
-            row = [cat_name, d1_fn(k, dim), d2_fn(k, dim), d3_fn(k, dim)]
-            row.extend(compute_aude_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
-            table.append(row)
-
-    add_rows(l_adset_plat, t_adset_plat, "AdSet x Platform",
-             lambda k, d: d.get("adset_name", ""),
-             lambda k, d: d.get("publisher_platform", ""),
-             lambda k, d: "")
-
-    add_rows(l_adset_gen_age, t_adset_gen_age, "AdSet x Gender x Age",
-             lambda k, d: d.get("adset_name", ""),
-             lambda k, d: d.get("gender", ""),
-             lambda k, d: d.get("age", ""))
-
-    add_rows(l_plat_pos_dev, t_plat_pos_dev, "Platform x Position x Device",
-             lambda k, d: d.get("publisher_platform", ""),
-             lambda k, d: d.get("platform_position", ""),
-             lambda k, d: d.get("impression_device", ""))
-
-    return table
-
-
-def build_audiencesegment_table(l_camp_seg, t_camp_seg, breakdown_key) -> List[List[Any]]:
-    header = ["Category", "Campaign Name", "Audience Segment"] + AUSE_METRIC_HEADERS
-    table = [header]
-
-    seg_totals = {"last": {}, "this": {}}
-
-    def add_to_totals(period, persona, metrics):
-        if persona not in seg_totals[period]:
-            seg_totals[period][persona] = {
-                "impressions": 0, "spend": 0.0,
-                "cv_1d": 0.0, "cv_7d": 0.0
-            }
-        t = seg_totals[period][persona]
-        t["impressions"] += metrics.get("impressions", 0)
-        t["spend"] += metrics.get("spend", 0.0)
-        t["cv_1d"] += metrics.get("cv_1d", 0.0)
-        t["cv_7d"] += metrics.get("cv_7d", 0.0)
-
-    for k in sorted(set(l_camp_seg.keys()) | set(t_camp_seg.keys())):
-        ld, td = l_camp_seg.get(k, {}), t_camp_seg.get(k, {})
-        dim = td.get("dim") or ld.get("dim") or {}
-        persona = dim.get(breakdown_key, "__MISSING__")
-
-        if ld:
-            add_to_totals("last", persona, ld.get("metrics", {}))
-        if td:
-            add_to_totals("this", persona, td.get("metrics", {}))
-
-        row = ["Campaign", dim.get("campaign_name", ""), persona]
-        row.extend(compute_ause_metric_row(ld.get("metrics", {}), td.get("metrics", {})))
-        table.append(row)
-
-    all_personas = sorted(set(seg_totals["last"].keys()) | set(seg_totals["this"].keys()))
-    for p in all_personas:
-        ld_metrics = seg_totals["last"].get(p, {})
-        td_metrics = seg_totals["this"].get(p, {})
-        row = ["Total", "All Campaigns Sum", p]
-        row.extend(compute_ause_metric_row(ld_metrics, td_metrics))
-        table.append(row)
 
     return table
 
@@ -961,14 +716,10 @@ def main():
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote AUDIENCEDETAIL rows={len(table)-1}")
 
-        # --- 修正: auseシート取得時のみ breakdown候補を検証し、actionsログで原因特定できるようにする ---
         elif kind == "AUDIENCESEGMENT":
             camp_fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
 
-            # ログの許可リストに基づき "default" を指定（維持）
             seg_attr = ["default"]
-
-            # 公式/互換の候補（user_segment_key を最優先）
             breakdown_candidates = ["user_segment_key", "audience_segment", "user_persona_name"]
 
             def ause_debug(tag: str, rows: List[Dict[str, Any]], bd: str) -> None:
