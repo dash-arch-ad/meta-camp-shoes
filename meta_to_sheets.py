@@ -357,7 +357,7 @@ def build_audiencedetail_monthly_table(
     table = [header]
 
     def add_rows(rows: List[Dict], cat_name: str, campaign_name_fn, d1_fn, d2_fn, d3_fn):
-        for r in sorted(rows, key=lambda x: (x.get("date_start", ""), d1_fn(x), d2_fn(x), d3_fn(x), x.get("adset_id", ""))):
+        for r in sorted(rows, key=lambda x: (x.get("date_start", ""), campaign_name_fn(x), d1_fn(x), d2_fn(x), d3_fn(x), x.get("adset_id", ""), x.get("campaign_id", ""))):
             table.append([
                 (r.get("date_start") or "")[:7],
                 cat_name,
@@ -387,7 +387,7 @@ def build_audiencedetail_monthly_table(
     add_rows(
         plat_pos_dev_rows,
         "Platform x Position x Device Platform",
-        lambda r: "",
+        lambda r: r.get("campaign_name", ""),
         lambda r: r.get("publisher_platform", ""),
         lambda r: r.get("platform_position", ""),
         lambda r: r.get("device_platform", ""),
@@ -661,7 +661,10 @@ def main():
                 "campaign_name", "adset_id", "adset_name", "spend", "reach", "impressions",
                 "clicks", "inline_link_clicks", "actions", "action_values"
             ]
-            acc_fields = ["spend", "reach", "impressions", "clicks", "inline_link_clicks", "actions", "action_values"]
+            camp_fields = [
+                "campaign_id", "campaign_name", "spend", "reach", "impressions",
+                "clicks", "inline_link_clicks", "actions", "action_values"
+            ]
 
             def aude_debug(tag: str, rows: List[Dict[str, Any]]) -> None:
                 print(f"[AUDE DEBUG] {tag}: rows={len(rows)}")
@@ -701,7 +704,7 @@ def main():
 
             adset_plat_rows = get_monthly_data("adset", adset_fields, ["publisher_platform"])
             adset_gen_age_rows = get_monthly_data("adset", adset_fields, ["gender", "age"])
-            plat_pos_dev_rows = get_monthly_data("account", acc_fields, ["publisher_platform", "platform_position", "device_platform"])
+            plat_pos_dev_rows = get_monthly_data("campaign", camp_fields, ["publisher_platform", "platform_position", "device_platform"])
 
             aude_debug("monthly adset x platform", adset_plat_rows)
             aude_debug("monthly adset x gender x age", adset_gen_age_rows)
