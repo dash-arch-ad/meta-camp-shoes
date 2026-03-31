@@ -23,7 +23,6 @@ MONTHLY_METRIC_HEADERS = [
     "cpa_click_7d", "roas_click_7d",
 ]
 
-# ここから変更箇所①
 FILTER_CAMPAIGN_KEYWORDS = [
     "Camper(CORE)",
     "Camper(SP)",
@@ -31,7 +30,6 @@ FILTER_CAMPAIGN_KEYWORDS = [
     "CV最適化",
 ]
 
-# ここから変更箇所②
 FILTER_CAMPAIGN_TOTAL_NAMES = {
     "Camper(CORE)": "Camper(CORE)_合計",
     "Camper(SP)": "Camper(SP)_合計",
@@ -583,14 +581,12 @@ def build_filter_table(detail_rows: List[Dict[str, Any]], total_rows: List[Dict[
 
     all_months = sorted(set(detail_by_month.keys()) | set(totals_by_month.keys()))
 
-    # ここから変更箇所③
     ordered_total_names = [
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE)"],
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(SP)"],
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE-L)"],
         FILTER_CAMPAIGN_TOTAL_NAMES["CV最適化"],
     ]
-    # ここまで変更箇所③
 
     for month in all_months:
         for r in detail_by_month.get(month, []):
