@@ -23,6 +23,12 @@ MONTHLY_METRIC_HEADERS = [
     "cpa_click_7d", "roas_click_7d",
 ]
 
+FILTER_CAMPAIGN_KEYWORDS = [
+    "Camper(CORE)",
+    "Camper(SP)",
+    "Camper(CORE-L)",
+]
+
 ROW_METRIC_HEADERS = [
     "impressions", "reach", "spend",
     "cv_view_1d", "cv_click_7d",
@@ -524,6 +530,14 @@ def build_monthly_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
     return table
 
 
+def build_filter_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
+    filtered_rows = [
+        r for r in rows
+        if any(k in str(r.get("campaign_name", "")) for k in FILTER_CAMPAIGN_KEYWORDS)
+    ]
+    return build_monthly_table(filtered_rows)
+
+
 def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(g_creds, scopes=scopes)
@@ -621,6 +635,16 @@ def main():
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote {kind} rows={len(table)-1}")
+
+        elif kind == "FILTER":
+            fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
+
+            filter_rows = get_monthly_data("campaign", fields)
+            table = build_filter_table(filter_rows)
+
+            for s_id in s_id_list:
+                sheets_write(s_id, worksheet_title, table, g_creds)
+            print(f"OK: wrote FILTER rows={len(table)-1}")
 
         elif kind == "DAILY":
             fields = ["campaign_id", "campaign_name", "spend", "reach", "impressions", "actions", "action_values"]
