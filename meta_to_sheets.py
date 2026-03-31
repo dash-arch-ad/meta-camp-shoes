@@ -741,31 +741,46 @@ def main():
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote {kind} rows={len(table)-1}")
 
+        # ここから変更箇所：FILTERを直近15ヶ月分に変更
         elif kind == "FILTER":
             detail_fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
             total_fields = ["reach", "spend", "actions", "action_values"]
 
-            filter_detail_rows = get_monthly_data("campaign", detail_fields)
-
+            # monthly_range_to_yesterday_jst() で直近15ヶ月分を取得
+            filter_monthly_rng = monthly_range_to_yesterday_jst()
+            filter_detail_rows = []
             filter_total_rows: List[Dict[str, Any]] = []
 
-            for keyword in FILTER_CAMPAIGN_KEYWORDS:
-                rows = get_monthly_data(
-                    "account",
-                    total_fields,
-                    filtering=[
-                        {
-                            "field": "campaign.name",
-                            "operator": "CONTAIN",
-                            "value": keyword,
-                        }
-                    ],
+            if filter_monthly_rng:
+                filter_since, filter_until = filter_monthly_rng
+
+                filter_detail_rows = meta_get_insights(
+                    api_version, m_token, m_act_id, detail_fields,
+                    time_range={"since": filter_since, "until": filter_until},
+                    action_attribution_windows=["1d_view", "7d_click"],
+                    level="campaign", time_increment="monthly"
                 )
 
-                for r in rows:
-                    r2 = dict(r)
-                    r2["_filter_total_name"] = FILTER_CAMPAIGN_TOTAL_NAMES[keyword]
-                    filter_total_rows.append(r2)
+                for keyword in FILTER_CAMPAIGN_KEYWORDS:
+                    rows = meta_get_insights(
+                        api_version, m_token, m_act_id, total_fields,
+                        time_range={"since": filter_since, "until": filter_until},
+                        action_attribution_windows=["1d_view", "7d_click"],
+                        level="account", time_increment="monthly",
+                        filtering=[
+                            {
+                                "field": "campaign.name",
+                                "operator": "CONTAIN",
+                                "value": keyword,
+                            }
+                        ],
+                    )
+
+                    for r in rows:
+                        r2 = dict(r)
+                        r2["_filter_total_name"] = FILTER_CAMPAIGN_TOTAL_NAMES[keyword]
+                        filter_total_rows.append(r2)
+        # ここまで変更箇所
 
             table = build_filter_table(filter_detail_rows, filter_total_rows)
 
