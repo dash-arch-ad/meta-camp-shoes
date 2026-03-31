@@ -29,6 +29,12 @@ FILTER_CAMPAIGN_KEYWORDS = [
     "Camper(CORE-L)",
 ]
 
+FILTER_CAMPAIGN_TOTAL_NAMES = {
+    "Camper(CORE)": "Camper(CORE)_合計",
+    "Camper(SP)": "Camper(SP)_合計",
+    "Camper(CORE-L)": "Camper(CORE-L)_合計",
+}
+
 ROW_METRIC_HEADERS = [
     "impressions", "reach", "spend",
     "cv_view_1d", "cv_click_7d",
@@ -116,6 +122,7 @@ def meta_get_insights(
     action_attribution_windows: Optional[List[str]] = None,
     level: str = "campaign", breakdowns: Optional[List[str]] = None,
     time_increment: Optional[str] = None,
+    filtering: Optional[List[Dict[str, Any]]] = None,
     limit: int = 500, max_pages: int = 50,
 ) -> List[Dict[str, Any]]:
 
@@ -142,6 +149,9 @@ def meta_get_insights(
 
     if time_increment:
         params["time_increment"] = time_increment
+
+    if filtering:
+        params["filtering"] = json.dumps(filtering, separators=(",", ":"))
 
     out: List[Dict[str, Any]] = []
     pages = 0
@@ -530,12 +540,98 @@ def build_monthly_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
     return table
 
 
-def build_filter_table(rows: List[Dict[str, Any]]) -> List[List[Any]]:
-    filtered_rows = [
-        r for r in rows
+def build_filter_table(detail_rows: List[Dict[str, Any]], total_rows: List[Dict[str, Any]]) -> List[List[Any]]:
+    header = MONTHLY_METRIC_HEADERS
+    table = [header]
+
+    def fmt(x: Any) -> Any:
+        if x is None:
+            return ""
+        try:
+            return round(float(x), 6)
+        except:
+            return ""
+
+    filtered_detail_rows = [
+        r for r in detail_rows
         if any(k in str(r.get("campaign_name", "")) for k in FILTER_CAMPAIGN_KEYWORDS)
     ]
-    return build_monthly_table(filtered_rows)
+
+    filtered_detail_rows = sorted(
+        filtered_detail_rows,
+        key=lambda r: (
+            r.get("date_start", ""),
+            r.get("campaign_name", ""),
+            r.get("campaign_id", ""),
+        )
+    )
+
+    totals_by_month: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for r in total_rows:
+        month = (r.get("date_start") or "")[:7]
+        total_name = str(r.get("_filter_total_name", ""))
+        totals_by_month.setdefault(month, {})[total_name] = r
+
+    detail_by_month: Dict[str, List[Dict[str, Any]]] = {}
+    for r in filtered_detail_rows:
+        month = (r.get("date_start") or "")[:7]
+        detail_by_month.setdefault(month, []).append(r)
+
+    all_months = sorted(set(detail_by_month.keys()) | set(totals_by_month.keys()))
+
+    ordered_total_names = [
+        FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE)"],
+        FILTER_CAMPAIGN_TOTAL_NAMES["Camper(SP)"],
+        FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE-L)"],
+    ]
+
+    for month in all_months:
+        for r in detail_by_month.get(month, []):
+            m = extract_metrics(r)
+            spend = m["spend"]
+            cv7 = m["cv_7d"]
+            s7 = m["sales_7d"]
+            cpa = (spend / cv7) if cv7 > 0 else None
+            roas = (s7 / spend) if spend > 0 else None
+
+            table.append([
+                month,
+                r.get("campaign_name", ""),
+                fmt(m["reach"]),
+                fmt(m["cv_1d"]),
+                fmt(m["cv_7d"]),
+                fmt(m["sales_1d"]),
+                fmt(m["sales_7d"]),
+                fmt(cpa),
+                fmt(roas),
+            ])
+
+        month_totals = totals_by_month.get(month, {})
+        for total_name in ordered_total_names:
+            r = month_totals.get(total_name)
+            if not r:
+                continue
+
+            m = extract_metrics(r)
+            spend = m["spend"]
+            cv7 = m["cv_7d"]
+            s7 = m["sales_7d"]
+            cpa = (spend / cv7) if cv7 > 0 else None
+            roas = (s7 / spend) if spend > 0 else None
+
+            table.append([
+                month,
+                total_name,
+                fmt(m["reach"]),
+                fmt(m["cv_1d"]),
+                fmt(m["cv_7d"]),
+                fmt(m["sales_1d"]),
+                fmt(m["sales_7d"]),
+                fmt(cpa),
+                fmt(roas),
+            ])
+
+    return table
 
 
 def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
@@ -600,8 +696,16 @@ def main():
                     )
         return data_cache[period][cache_key]
 
-    def get_monthly_data(level: str, fields: List[str], breakdowns: Optional[List[str]] = None, attr_windows: Optional[List[str]] = ["1d_view", "7d_click"]) -> List[Dict]:
-        cache_key = f"{level}_{','.join(fields)}_{','.join(breakdowns) if breakdowns else 'none'}_monthly_{str(attr_windows)}"
+    def get_monthly_data(
+        level: str,
+        fields: List[str],
+        breakdowns: Optional[List[str]] = None,
+        attr_windows: Optional[List[str]] = ["1d_view", "7d_click"],
+        filtering: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict]:
+        filtering_key = json.dumps(filtering, separators=(",", ":"), ensure_ascii=False) if filtering else "none"
+        cache_key = f"{level}_{','.join(fields)}_{','.join(breakdowns) if breakdowns else 'none'}_monthly_{str(attr_windows)}_{filtering_key}"
+
         if cache_key not in data_cache["monthly"]:
             if not compare_since:
                 data_cache["monthly"][cache_key] = []
@@ -610,7 +714,8 @@ def main():
                     api_version, m_token, m_act_id, fields,
                     time_range={"since": compare_since, "until": compare_until},
                     action_attribution_windows=attr_windows,
-                    level=level, breakdowns=breakdowns, time_increment="monthly"
+                    level=level, breakdowns=breakdowns, time_increment="monthly",
+                    filtering=filtering,
                 )
         return data_cache["monthly"][cache_key]
 
@@ -637,10 +742,32 @@ def main():
             print(f"OK: wrote {kind} rows={len(table)-1}")
 
         elif kind == "FILTER":
-            fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
+            detail_fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
+            total_fields = ["reach", "spend", "actions", "action_values"]
 
-            filter_rows = get_monthly_data("campaign", fields)
-            table = build_filter_table(filter_rows)
+            filter_detail_rows = get_monthly_data("campaign", detail_fields)
+
+            filter_total_rows: List[Dict[str, Any]] = []
+
+            for keyword in FILTER_CAMPAIGN_KEYWORDS:
+                rows = get_monthly_data(
+                    "account",
+                    total_fields,
+                    filtering=[
+                        {
+                            "field": "campaign.name",
+                            "operator": "CONTAIN",
+                            "value": keyword,
+                        }
+                    ],
+                )
+
+                for r in rows:
+                    r2 = dict(r)
+                    r2["_filter_total_name"] = FILTER_CAMPAIGN_TOTAL_NAMES[keyword]
+                    filter_total_rows.append(r2)
+
+            table = build_filter_table(filter_detail_rows, filter_total_rows)
 
             for s_id in s_id_list:
                 sheets_write(s_id, worksheet_title, table, g_creds)
