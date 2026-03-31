@@ -23,16 +23,20 @@ MONTHLY_METRIC_HEADERS = [
     "cpa_click_7d", "roas_click_7d",
 ]
 
+# ここから変更箇所①
 FILTER_CAMPAIGN_KEYWORDS = [
     "Camper(CORE)",
     "Camper(SP)",
     "Camper(CORE-L)",
+    "CV最適化",
 ]
 
+# ここから変更箇所②
 FILTER_CAMPAIGN_TOTAL_NAMES = {
     "Camper(CORE)": "Camper(CORE)_合計",
     "Camper(SP)": "Camper(SP)_合計",
     "Camper(CORE-L)": "Camper(CORE-L)_合計",
+    "CV最適化": "CV最適化_合計",
 }
 
 ROW_METRIC_HEADERS = [
@@ -579,11 +583,14 @@ def build_filter_table(detail_rows: List[Dict[str, Any]], total_rows: List[Dict[
 
     all_months = sorted(set(detail_by_month.keys()) | set(totals_by_month.keys()))
 
+    # ここから変更箇所③
     ordered_total_names = [
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE)"],
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(SP)"],
         FILTER_CAMPAIGN_TOTAL_NAMES["Camper(CORE-L)"],
+        FILTER_CAMPAIGN_TOTAL_NAMES["CV最適化"],
     ]
+    # ここまで変更箇所③
 
     for month in all_months:
         for r in detail_by_month.get(month, []):
@@ -741,12 +748,10 @@ def main():
                 sheets_write(s_id, worksheet_title, table, g_creds)
             print(f"OK: wrote {kind} rows={len(table)-1}")
 
-        # ここから変更箇所：FILTERを直近15ヶ月分に変更
         elif kind == "FILTER":
             detail_fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
             total_fields = ["reach", "spend", "actions", "action_values"]
 
-            # monthly_range_to_yesterday_jst() で直近15ヶ月分を取得
             filter_monthly_rng = monthly_range_to_yesterday_jst()
             filter_detail_rows = []
             filter_total_rows: List[Dict[str, Any]] = []
@@ -780,7 +785,6 @@ def main():
                         r2 = dict(r)
                         r2["_filter_total_name"] = FILTER_CAMPAIGN_TOTAL_NAMES[keyword]
                         filter_total_rows.append(r2)
-        # ここまで変更箇所
 
             table = build_filter_table(filter_detail_rows, filter_total_rows)
 
