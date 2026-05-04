@@ -253,17 +253,23 @@ def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_w
 def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
     metrics = extract_metrics(row, attr_window_cv, attr_window_cv_click)
     actions = row.get("actions", [])
+
+    def get_combined(candidates: List[str]) -> float:
+        # Meta広告マネージャのデフォルト表示は 7d_click + 1d_view の合算
+        click_val = get_action_value_multi(actions, candidates, "7d_click")
+        view_val  = get_action_value_multi(actions, candidates, "1d_view")
+        return click_val + view_val
+
     metrics.update({
         "link_clicks": float(row.get("inline_link_clicks") or 0.0),
         "clicks_all": float(row.get("clicks") or 0.0),
-        # [FIX] purchase も candidates リスト経由で取得（omni_purchase 等を含む）
-        "purchase": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["purchase"], attr_window_cv_click),
-        "add_to_cart": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["add_to_cart"], attr_window_cv_click),
-        "leads": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["leads"], attr_window_cv_click),
+        "purchase":       get_combined(AUDE_ACTION_TYPE_CANDIDATES["purchase"]),
+        "add_to_cart":    get_combined(AUDE_ACTION_TYPE_CANDIDATES["add_to_cart"]),
+        "leads":          get_combined(AUDE_ACTION_TYPE_CANDIDATES["leads"]),
         "post_reactions": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_reactions"], attr_window_cv_click),
-        "post_comments": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_comments"], attr_window_cv_click),
-        "post_saves": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_saves"], attr_window_cv_click),
-        "post_shares": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_shares"], attr_window_cv_click),
+        "post_comments":  get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_comments"],  attr_window_cv_click),
+        "post_saves":     get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_saves"],     attr_window_cv_click),
+        "post_shares":    get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_shares"],    attr_window_cv_click),
     })
     return metrics
 
