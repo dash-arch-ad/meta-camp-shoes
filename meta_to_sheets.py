@@ -894,17 +894,28 @@ def main():
                 if acts:
                     print(f"[AUDE DEBUG] {tag}: sample action[0] keys={list(acts[0].keys())}")
 
-                sample_action_map: Dict[str, Any] = {}
+                sample_action_map_7d: Dict[str, Any] = {}
+                sample_action_map_1d: Dict[str, Any] = {}
+                sample_action_map_val: Dict[str, Any] = {}
                 for a in acts:
                     if not isinstance(a, dict):
                         continue
                     at = a.get("action_type")
                     if at is not None:
-                        sample_action_map[str(at)] = a.get("7d_click", a.get("value", 0))
+                        sample_action_map_7d[str(at)]  = a.get("7d_click", 0)
+                        sample_action_map_1d[str(at)]  = a.get("1d_view", 0)
+                        sample_action_map_val[str(at)] = a.get("value", 0)
 
                 for metric_name, candidates in AUDE_ACTION_TYPE_CANDIDATES.items():
-                    matched = {c: sample_action_map.get(c, 0) for c in candidates if c in sample_action_map}
-                    print(f"[AUDE DEBUG] {tag}: sample_matches {metric_name}={matched or 'NO_MATCH'}")
+                    detail = {}
+                    for c in candidates:
+                        if c in sample_action_map_7d or c in sample_action_map_1d:
+                            detail[c] = {
+                                "7d_click": sample_action_map_7d.get(c, "MISSING"),
+                                "1d_view":  sample_action_map_1d.get(c, "MISSING"),
+                                "value":    sample_action_map_val.get(c, "MISSING"),
+                            }
+                    print(f"[AUDE DEBUG] {tag}: {metric_name}={detail or 'NO_MATCH'}")
 
             adset_plat_rows = get_monthly_data("adset", adset_fields, ["publisher_platform"])
             adset_gen_age_rows = get_monthly_data("adset", adset_fields, ["gender", "age"])
