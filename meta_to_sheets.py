@@ -255,10 +255,23 @@ def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", a
     actions = row.get("actions", [])
 
     def get_combined(candidates: List[str]) -> float:
-        # Meta広告マネージャのデフォルト表示は 7d_click + 1d_view の合算
-        click_val = get_action_value_multi(actions, candidates, "7d_click")
-        view_val  = get_action_value_multi(actions, candidates, "1d_view")
-        return click_val + view_val
+        """candidatesの優先順で最初にマッチした1種類のみ 7d_click + 1d_view を合算して返す"""
+        actions_list = actions if actions else []
+        action_map: Dict[str, Dict[str, Any]] = {}
+        for a in actions_list:
+            at = a.get("action_type")
+            if at is not None:
+                action_map[str(at)] = a
+        for target in candidates:
+            a = action_map.get(target)
+            if a is not None:
+                try:
+                    click_val = float(a.get("7d_click") or 0)
+                    view_val  = float(a.get("1d_view")  or 0)
+                    return click_val + view_val
+                except:
+                    return 0.0
+        return 0.0
 
     metrics.update({
         "link_clicks": float(row.get("inline_link_clicks") or 0.0),
