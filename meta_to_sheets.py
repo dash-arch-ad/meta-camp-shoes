@@ -55,17 +55,20 @@ AUDE_ROW_EXTRA_METRIC_HEADERS = [
     "post_saves", "post_shares",
 ]
 
+# omni_ 系はオフサイト・アプリ・オンサイトを統合した重複なしの指標。
+# fb_pixel_ / add_to_cart 等と同じコンバージョンを別名で持つため、
+# omni_ のみを使うことで二重・三重カウントを防ぐ。
+# omni_purchase が存在しない場合のフォールバックとして
+# offsite_conversion.fb_pixel_purchase → purchase の順で試みる。
 AUDE_ACTION_TYPE_CANDIDATES = {
+    # purchase: omni_purchase を優先。なければ fb_pixel_purchase にフォールバック
     "purchase": [
-        "offsite_conversion.fb_pixel_purchase",
         "omni_purchase",
-        "purchase",
+        "offsite_conversion.fb_pixel_purchase",
     ],
+    # add_to_cart: omni_add_to_cart のみ（fb_pixel / add_to_cart と同値のため1つだけ）
     "add_to_cart": [
-        "offsite_conversion.fb_pixel_add_to_cart",
         "omni_add_to_cart",
-        "mobile_app_add_to_cart",
-        "add_to_cart",
     ],
     "leads": [
         "lead",
@@ -205,23 +208,30 @@ def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str
 
 
 # ------------------------------------------------------------------ #
-# [FIX] 同上、複数 action_type を合算するバージョン                   #
+# [FIX] candidates リストの優先順に最初にマッチした1件のみ返す        #
+#       → 同一CVを別名で持つ action_type による二重カウントを防ぐ     #
 # ------------------------------------------------------------------ #
 def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actions: List[str], attr_window: str) -> float:
     if not actions:
         return 0.0
-    total = 0.0
-    target_set = set(target_actions)
+    # action_type -> アクション辞書 のマップを作成
+    action_map: Dict[str, Dict[str, Any]] = {}
     for a in actions:
-        if a.get("action_type") in target_set:
+        at = a.get("action_type")
+        if at is not None:
+            action_map[str(at)] = a
+    # candidates の優先順に最初にマッチした1件のみ返す
+    for target in target_actions:
+        a = action_map.get(target)
+        if a is not None:
             try:
                 raw = a.get(attr_window)
                 if raw is None:
                     raw = a.get("value", 0)
-                total += float(raw)
+                return float(raw)
             except:
-                continue
-    return total
+                return 0.0
+    return 0.0
 
 
 def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
