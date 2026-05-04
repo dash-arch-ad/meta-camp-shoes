@@ -56,6 +56,11 @@ AUDE_ROW_EXTRA_METRIC_HEADERS = [
 ]
 
 AUDE_ACTION_TYPE_CANDIDATES = {
+    "purchase": [
+        "offsite_conversion.fb_pixel_purchase",
+        "omni_purchase",
+        "purchase",
+    ],
     "add_to_cart": [
         "offsite_conversion.fb_pixel_add_to_cart",
         "omni_add_to_cart",
@@ -181,20 +186,27 @@ def meta_get_insights(
     return out
 
 
+# ------------------------------------------------------------------ #
+# [FIX] attr_window が存在しない場合に "value" へフォールバック       #
+# ------------------------------------------------------------------ #
 def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str, attr_window: str) -> float:
     if not actions:
         return 0.0
     for a in actions:
         if a.get("action_type") == target_action:
             try:
-                if attr_window == "value":
-                    return float(a.get("value", 0))
-                return float(a.get(attr_window, 0))
+                raw = a.get(attr_window)
+                if raw is None:
+                    raw = a.get("value", 0)
+                return float(raw)
             except:
                 return 0.0
     return 0.0
 
 
+# ------------------------------------------------------------------ #
+# [FIX] 同上、複数 action_type を合算するバージョン                   #
+# ------------------------------------------------------------------ #
 def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actions: List[str], attr_window: str) -> float:
     if not actions:
         return 0.0
@@ -203,10 +215,10 @@ def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actio
     for a in actions:
         if a.get("action_type") in target_set:
             try:
-                if attr_window == "value":
-                    total += float(a.get("value", 0))
-                else:
-                    total += float(a.get(attr_window, 0))
+                raw = a.get(attr_window)
+                if raw is None:
+                    raw = a.get("value", 0)
+                total += float(raw)
             except:
                 continue
     return total
@@ -224,13 +236,18 @@ def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_w
     }
 
 
+# ------------------------------------------------------------------ #
+# [FIX] purchase を AUDE_ACTION_TYPE_CANDIDATES 経由で取得に変更      #
+#       → omni_purchase / fb_pixel_purchase 両方をカバー             #
+# ------------------------------------------------------------------ #
 def extract_aude_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
     metrics = extract_metrics(row, attr_window_cv, attr_window_cv_click)
     actions = row.get("actions", [])
     metrics.update({
         "link_clicks": float(row.get("inline_link_clicks") or 0.0),
         "clicks_all": float(row.get("clicks") or 0.0),
-        "purchase": get_action_value(actions, "purchase", attr_window_cv_click),
+        # [FIX] purchase も candidates リスト経由で取得（omni_purchase 等を含む）
+        "purchase": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["purchase"], attr_window_cv_click),
         "add_to_cart": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["add_to_cart"], attr_window_cv_click),
         "leads": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["leads"], attr_window_cv_click),
         "post_reactions": get_action_value_multi(actions, AUDE_ACTION_TYPE_CANDIDATES["post_reactions"], attr_window_cv_click),
@@ -856,6 +873,11 @@ def main():
                 )
 
                 acts = sample.get("actions") if isinstance(sample.get("actions"), list) else []
+
+                # [FIX] 実際のアクションオブジェクトのキーをログ出力
+                if acts:
+                    print(f"[AUDE DEBUG] {tag}: sample action[0] keys={list(acts[0].keys())}")
+
                 sample_action_map: Dict[str, Any] = {}
                 for a in acts:
                     if not isinstance(a, dict):
