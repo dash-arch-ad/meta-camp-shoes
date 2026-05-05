@@ -235,14 +235,23 @@ def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actio
 
 
 def extract_metrics(row: Dict[str, Any], attr_window_cv: str = "1d_view", attr_window_cv_click: str = "7d_click") -> Dict[str, Any]:
+    action_values = row.get("action_values", [])
+    # sales は omni_purchase を優先。ブレークダウン時に "purchase" が返らないケースがあるため
+    sales_1d = get_action_value(action_values, "omni_purchase", attr_window_cv)
+    if sales_1d == 0.0:
+        sales_1d = get_action_value(action_values, TARGET_ACTION_SALES, attr_window_cv)
+    sales_7d = get_action_value(action_values, "omni_purchase", attr_window_cv_click)
+    if sales_7d == 0.0:
+        sales_7d = get_action_value(action_values, TARGET_ACTION_SALES, attr_window_cv_click)
+
     return {
         "spend": float(row.get("spend") or 0.0),
         "reach": int(row.get("reach") or 0),
         "impressions": int(row.get("impressions") or 0),
         "cv_1d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv),
         "cv_7d": get_action_value(row.get("actions", []), TARGET_ACTION_CV, attr_window_cv_click),
-        "sales_1d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv),
-        "sales_7d": get_action_value(row.get("action_values", []), TARGET_ACTION_SALES, attr_window_cv_click),
+        "sales_1d": sales_1d,
+        "sales_7d": sales_7d,
     }
 
 
