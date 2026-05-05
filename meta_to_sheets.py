@@ -190,7 +190,8 @@ def meta_get_insights(
 
 
 # ------------------------------------------------------------------ #
-# [FIX] attr_window が存在しない場合に "value" へフォールバック       #
+# [FIX] attr_window が存在しない場合は 0 を返す（value へのフォール  #
+#       バックを廃止。value は 7d_click+1d_view の合算値のため混入）  #
 # ------------------------------------------------------------------ #
 def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str, attr_window: str) -> float:
     if not actions:
@@ -200,7 +201,7 @@ def get_action_value(actions: Optional[List[Dict[str, Any]]], target_action: str
             try:
                 raw = a.get(attr_window)
                 if raw is None:
-                    raw = a.get("value", 0)
+                    return 0.0  # キーがない場合は 0（value へフォールバックしない）
                 return float(raw)
             except:
                 return 0.0
@@ -227,7 +228,7 @@ def get_action_value_multi(actions: Optional[List[Dict[str, Any]]], target_actio
             try:
                 raw = a.get(attr_window)
                 if raw is None:
-                    raw = a.get("value", 0)
+                    return 0.0  # キーがない場合は 0（value へフォールバックしない）
                 return float(raw)
             except:
                 return 0.0
