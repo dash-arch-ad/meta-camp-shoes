@@ -939,6 +939,15 @@ def main():
                             }
                     print(f"[AUDE DEBUG] {tag}: {metric_name}={detail or 'NO_MATCH'}")
 
+                # cv / sales の実際の取得値をデバッグ出力
+                cv_act = sample.get("actions", [])
+                cv_vals = sample.get("action_values", [])
+                for at_name in ["offsite_conversion.fb_pixel_purchase", "omni_purchase", "purchase"]:
+                    for label, src in [("actions", cv_act), ("action_values", cv_vals)]:
+                        for a in (src or []):
+                            if a.get("action_type") == at_name:
+                                print(f"[AUDE DEBUG] {tag}: [{label}] {at_name} => 1d_view={a.get('1d_view','MISSING')} 7d_click={a.get('7d_click','MISSING')} value={a.get('value','MISSING')}")
+
             adset_plat_rows = get_monthly_data("adset", adset_fields, ["publisher_platform"])
             adset_gen_age_rows = get_monthly_data("adset", adset_fields, ["gender", "age"])
             plat_pos_dev_rows = get_monthly_data("campaign", camp_fields, ["publisher_platform", "platform_position", "device_platform"])
