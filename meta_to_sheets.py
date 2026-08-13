@@ -191,6 +191,13 @@ def get_month_ranges(month_count):
     return ranges
 
 
+def iter_dates(since, until):
+    current = since
+    while current <= until:
+        yield current
+        current += timedelta(days=1)
+
+
 def format_ranges(ranges):
     return ", ".join(
         f"{r['label']}({r['since']} to {r['until']})"
@@ -385,32 +392,45 @@ def build_gitreport1_rows(
             f"Fetching ad_day: {month_range['label']}"
         )
 
-        batch = fetch_meta_insights(
-            act_id=act_id,
-            token=token,
-            since=month_range["since"],
-            until=month_range["until"],
-            level="ad",
-            fields=[
-                "campaign_name",
-                "adset_name",
-                "ad_name",
-                "actions",
-                "action_values",
-            ],
-            time_increment=1,
-            action_attribution_windows=attr_windows,
-        )
-
-        for item in batch:
-            rows.append(
-                make_gitreport1_row(
-                    scope="ad_day",
-                    month=month_range["label"],
-                    day=item.get("date_start", ""),
-                    item=item,
-                )
+        # Meta error_subcode 1504044 is a Sync report failure.
+        # Avoid one large "ad x day x month" synchronous query:
+        # fetch each date independently.
+        for target_day in iter_dates(
+            month_range["since"],
+            month_range["until"],
+        ):
+            print(
+                f"Fetching ad_day: "
+                f"{target_day.strftime('%Y-%m-%d')}"
             )
+
+            batch = fetch_meta_insights(
+                act_id=act_id,
+                token=token,
+                since=target_day,
+                until=target_day,
+                level="ad",
+                fields=[
+                    "campaign_name",
+                    "adset_name",
+                    "ad_name",
+                    "actions",
+                    "action_values",
+                ],
+                # 1日だけのtime_rangeなのでtime_incrementは不要
+                time_increment=None,
+                action_attribution_windows=attr_windows,
+            )
+
+            for item in batch:
+                rows.append(
+                    make_gitreport1_row(
+                        scope="ad_day",
+                        month=month_range["label"],
+                        day=target_day.strftime("%Y-%m-%d"),
+                        item=item,
+                    )
+                )
 
         # ---------------------------------------------
         # adset_gen_age
@@ -433,7 +453,7 @@ def build_gitreport1_rows(
                 "actions",
                 "action_values",
             ],
-            time_increment="monthly",
+            time_increment=None,
             breakdowns=[
                 "gender",
                 "age",
@@ -473,7 +493,7 @@ def build_gitreport1_rows(
                 "actions",
                 "action_values",
             ],
-            time_increment="monthly",
+            time_increment=None,
             breakdowns=[
                 "publisher_platform",
                 "platform_position",
