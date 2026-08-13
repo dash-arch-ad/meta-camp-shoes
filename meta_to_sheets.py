@@ -714,6 +714,198 @@ def sheets_write(spreadsheet_id: str, worksheet_title: str, values_2d: List[List
         raise RuntimeError(f"sheets_write failed for sheet='{worksheet_title}': {type(e).__name__}") from None
 
 
+
+
+# ------------------------------------------------------------------ #
+# 統合出力: MONTHLY / DAILY / AUDIENCE / AUDIENCEDETAIL(AUDE) / AD
+# → 1つのシート "gitreport" に統合する。
+# FILTER / AUDIENCESEGMENT(AUSE) は既存ロジックを変更しない。
+# ------------------------------------------------------------------ #
+GITREPORT_HEADERS = [
+    "media", "scope", "month", "day",
+    "campaign_name", "adset_name", "ad_name",
+    "gender", "age", "platform", "placement", "device_platform",
+    "cv_view_1d", "cv_click_7d", "cv_view1d_click7d", "cv_incr",
+    "sales_view_1d", "sales_click_7d", "sales_view1d_click7d", "sales_incr",
+]
+
+# Meta公式のincrementality取得時に必要なattribution windowセット。
+# 1d_click は出力には使わないが、incrementality取得用リクエストに含める。
+GITREPORT_ATTR_WINDOWS = ["1d_click", "7d_click", "1d_view", "incrementality"]
+
+
+def gitreport_range_to_yesterday_jst() -> Optional[Tuple[str, str]]:
+    """実行月を含む過去3か月分: 2か月前の1日 ～ 前日。"""
+    today = datetime.now(JST).date()
+    yesterday = today - timedelta(days=1)
+    current_month_start = date(today.year, today.month, 1)
+    since = month_start_n_months_ago(current_month_start, 2)
+    if yesterday < since:
+        return None
+    return since.isoformat(), yesterday.isoformat()
+
+
+def get_purchase_conversion_value(
+    action_values: Optional[List[Dict[str, Any]]],
+    attr_window: str,
+) -> float:
+    """Purchases conversion value を既存コードと同じ優先順で取得。"""
+    for action_type in ("omni_purchase", TARGET_ACTION_SALES, TARGET_ACTION_CV):
+        v = get_action_value(action_values, action_type, attr_window)
+        if v != 0.0:
+            return v
+    return 0.0
+
+
+def extract_gitreport_metrics(row: Dict[str, Any]) -> Dict[str, float]:
+    actions = row.get("actions", [])
+    action_values = row.get("action_values", [])
+
+    cv_view_1d = get_action_value(actions, TARGET_ACTION_CV, "1d_view")
+    cv_click_7d = get_action_value(actions, TARGET_ACTION_CV, "7d_click")
+    cv_incr = get_action_value(actions, TARGET_ACTION_CV, "incrementality")
+
+    sales_view_1d = get_purchase_conversion_value(action_values, "1d_view")
+    sales_click_7d = get_purchase_conversion_value(action_values, "7d_click")
+    sales_incr = get_purchase_conversion_value(action_values, "incrementality")
+
+    return {
+        "cv_view_1d": cv_view_1d,
+        "cv_click_7d": cv_click_7d,
+        "cv_view1d_click7d": cv_view_1d + cv_click_7d,
+        "cv_incr": cv_incr,
+        "sales_view_1d": sales_view_1d,
+        "sales_click_7d": sales_click_7d,
+        "sales_view1d_click7d": sales_view_1d + sales_click_7d,
+        "sales_incr": sales_incr,
+    }
+
+
+def gitreport_metric_values(row: Dict[str, Any]) -> List[Any]:
+    m = extract_gitreport_metrics(row)
+    return [
+        fmt_value(m["cv_view_1d"]),
+        fmt_value(m["cv_click_7d"]),
+        fmt_value(m["cv_view1d_click7d"]),
+        fmt_value(m["cv_incr"]),
+        fmt_value(m["sales_view_1d"]),
+        fmt_value(m["sales_click_7d"]),
+        fmt_value(m["sales_view1d_click7d"]),
+        fmt_value(m["sales_incr"]),
+    ]
+
+
+def build_gitreport_table(
+    ad_day_rows: List[Dict[str, Any]],
+    adset_gen_age_rows: List[Dict[str, Any]],
+    adset_pm_rows: List[Dict[str, Any]],
+) -> List[List[Any]]:
+    table: List[List[Any]] = [GITREPORT_HEADERS]
+
+    # scope=ad_day: 月×日×広告
+    for r in sorted(
+        ad_day_rows,
+        key=lambda x: (
+            x.get("date_start", ""),
+            x.get("campaign_name", ""),
+            x.get("adset_name", ""),
+            x.get("ad_name", ""),
+            x.get("ad_id", ""),
+        ),
+    ):
+        day = r.get("date_start", "")
+        table.append([
+            "facebook", "ad_day", day[:7], day,
+            r.get("campaign_name", ""),
+            r.get("adset_name", ""),
+            r.get("ad_name", ""),
+            "", "", "", "", "",
+            *gitreport_metric_values(r),
+        ])
+
+    # scope=adset_gen_age: 月×広告セット×性別×年齢
+    for r in sorted(
+        adset_gen_age_rows,
+        key=lambda x: (
+            x.get("date_start", ""),
+            x.get("campaign_name", ""),
+            x.get("adset_name", ""),
+            x.get("gender", ""),
+            x.get("age", ""),
+            x.get("adset_id", ""),
+        ),
+    ):
+        month = (r.get("date_start", "") or "")[:7]
+        table.append([
+            "facebook", "adset_gen_age", month, "",
+            r.get("campaign_name", ""),
+            r.get("adset_name", ""),
+            "",
+            r.get("gender", ""),
+            r.get("age", ""),
+            "", "", "",
+            *gitreport_metric_values(r),
+        ])
+
+    # scope=adset_pm: 月×広告セット×配置
+    for r in sorted(
+        adset_pm_rows,
+        key=lambda x: (
+            x.get("date_start", ""),
+            x.get("campaign_name", ""),
+            x.get("adset_name", ""),
+            x.get("publisher_platform", ""),
+            x.get("platform_position", ""),
+            x.get("device_platform", ""),
+            x.get("adset_id", ""),
+        ),
+    ):
+        month = (r.get("date_start", "") or "")[:7]
+        table.append([
+            "facebook", "adset_pm", month, "",
+            r.get("campaign_name", ""),
+            r.get("adset_name", ""),
+            "", "", "",
+            r.get("publisher_platform", ""),
+            r.get("platform_position", ""),
+            r.get("device_platform", ""),
+            *gitreport_metric_values(r),
+        ])
+
+    return table
+
+
+
+def sheets_write_raw(spreadsheet_id: str, worksheet_title: str, values_2d: List[List[Any]], g_creds: Dict[str, Any]) -> None:
+    """gitreport専用。日付/月文字列を自動変換させず、YYYY-MM / YYYY-MM-DD表記を保持する。"""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_info(g_creds, scopes=scopes)
+    service = build("sheets", "v4", credentials=creds)
+
+    try:
+        ss = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+        titles = {sh["properties"]["title"] for sh in ss.get("sheets", [])}
+        if worksheet_title not in titles:
+            service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": worksheet_title}}}]},
+            ).execute()
+
+        service.spreadsheets().values().clear(
+            spreadsheetId=spreadsheet_id,
+            range=f"{worksheet_title}!A:Z",
+            body={},
+        ).execute()
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"{worksheet_title}!A1",
+            valueInputOption="RAW",
+            body={"values": values_2d},
+        ).execute()
+    except Exception as e:
+        raise RuntimeError(f"sheets_write_raw failed for sheet='{worksheet_title}': {type(e).__name__}") from None
+
+
 def main():
     raw = os.environ.get("APP_SECRET_JSON")
     if not raw:
@@ -728,6 +920,57 @@ def main():
     g_creds = cfg["g_creds"]
 
     api_version = cfg.get("m_api_version", "v24.0")
+
+
+    # -------------------------------------------------------------- #
+    # 統合シート gitreport を作成
+    # -------------------------------------------------------------- #
+    git_rng = gitreport_range_to_yesterday_jst()
+    git_ad_day_rows: List[Dict[str, Any]] = []
+    git_adset_gen_age_rows: List[Dict[str, Any]] = []
+    git_adset_pm_rows: List[Dict[str, Any]] = []
+
+    if git_rng:
+        git_since, git_until = git_rng
+        git_time_range = {"since": git_since, "until": git_until}
+
+        git_ad_day_rows = meta_get_insights(
+            api_version, m_token, m_act_id,
+            ["campaign_name", "adset_name", "ad_id", "ad_name", "actions", "action_values"],
+            time_range=git_time_range,
+            action_attribution_windows=GITREPORT_ATTR_WINDOWS,
+            level="ad",
+            time_increment="1",
+        )
+
+        git_adset_gen_age_rows = meta_get_insights(
+            api_version, m_token, m_act_id,
+            ["campaign_name", "adset_id", "adset_name", "actions", "action_values"],
+            time_range=git_time_range,
+            action_attribution_windows=GITREPORT_ATTR_WINDOWS,
+            level="adset",
+            breakdowns=["gender", "age"],
+            time_increment="monthly",
+        )
+
+        git_adset_pm_rows = meta_get_insights(
+            api_version, m_token, m_act_id,
+            ["campaign_name", "adset_id", "adset_name", "actions", "action_values"],
+            time_range=git_time_range,
+            action_attribution_windows=GITREPORT_ATTR_WINDOWS,
+            level="adset",
+            breakdowns=["publisher_platform", "platform_position", "device_platform"],
+            time_increment="monthly",
+        )
+
+    gitreport_table = build_gitreport_table(
+        git_ad_day_rows,
+        git_adset_gen_age_rows,
+        git_adset_pm_rows,
+    )
+    for s_id in s_id_list:
+        sheets_write_raw(s_id, "gitreport", gitreport_table, g_creds)
+    print(f"OK: wrote GITREPORT rows={len(gitreport_table)-1}")
 
     rng = this_month_range_to_yesterday_jst()
     this_since, this_until = rng if rng else (None, None)
@@ -781,6 +1024,11 @@ def main():
     for sheet_kind, worksheet_title in sheets_map.items():
         kind = str(sheet_kind).strip().upper()
         print(f"Processing {kind} to sheet '{worksheet_title}'...")
+
+        if kind in {"MONTHLY", "DAILY", "AUDIENCE", "AUDIENCEDETAIL", "AUDE", "AD"}:
+            print(f"SKIP: legacy {kind} is consolidated into 'gitreport'")
+            continue
+
 
         if kind == "MONTHLY":
             fields = ["campaign_id", "campaign_name", "reach", "spend", "actions", "action_values"]
