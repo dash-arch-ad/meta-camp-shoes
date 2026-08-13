@@ -358,6 +358,23 @@ def iter_dates(since, until):
         current += timedelta(days=1)
 
 
+def to_sheets_date_serial(value):
+    """
+    Google Sheetsの日付シリアル値に変換する。
+    表示形式はスプレッドシート側の設定をそのまま使用する。
+    """
+    if not value:
+        return ""
+
+    if isinstance(value, date):
+        d = value
+    else:
+        d = datetime.strptime(str(value), "%Y-%m-%d").date()
+
+    base = date(1899, 12, 30)
+    return (d - base).days
+
+
 def format_ranges(ranges):
     return ", ".join(
         f"{r['label']}({r['since']} to {r['until']})"
@@ -629,10 +646,8 @@ def build_gitreport1_rows(
                 rows.append(
                     make_gitreport1_row(
                         scope="campaign_day",
-                        month=month_range["label"] + "-01",
-                        day=target_day.strftime(
-                            "%Y-%m-%d"
-                        ),
+                        month=to_sheets_date_serial(month_range["since"]),
+                        day=to_sheets_date_serial(target_day),
                         item=item,
                     )
                 )
@@ -668,7 +683,7 @@ def build_gitreport1_rows(
             rows.append(
                 make_gitreport1_row(
                     scope="ad",
-                    month=month_range["label"] + "-01",
+                    month=to_sheets_date_serial(month_range["since"]),
                     day="",
                     item=item,
                 )
@@ -707,7 +722,7 @@ def build_gitreport1_rows(
             rows.append(
                 make_gitreport1_row(
                     scope="adset_gen_age",
-                    month=month_range["label"] + "-01",
+                    month=to_sheets_date_serial(month_range["since"]),
                     day="",
                     item=item,
                     gender=item.get(
@@ -755,7 +770,7 @@ def build_gitreport1_rows(
             rows.append(
                 make_gitreport1_row(
                     scope="adset_pm",
-                    month=month_range["label"] + "-01",
+                    month=to_sheets_date_serial(month_range["since"]),
                     day="",
                     item=item,
                     platform=item.get(
@@ -967,7 +982,7 @@ def build_gitreport2_rows(
 
         for item in campaign_rows:
             rows.append([
-                month_range["label"] + "-01",
+                to_sheets_date_serial(month_range["since"]),
                 item.get(
                     "campaign_name",
                     "",
@@ -1018,7 +1033,7 @@ def build_gitreport2_rows(
             )
 
             rows.append([
-                month_range["label"] + "-01",
+                to_sheets_date_serial(month_range["since"]),
                 total_name,
                 total_reach,
             ])
@@ -1159,7 +1174,7 @@ def build_gitreport3_rows(
             )
 
             rows.append([
-                month_range["label"] + "-01",
+                to_sheets_date_serial(month_range["since"]),
                 item.get(
                     "campaign_name",
                     "",
@@ -1347,77 +1362,6 @@ def write_sheet(
     )
 
 
-
-def apply_date_formats(
-    spreadsheet,
-    sheet_name,
-    month_col_letter,
-    day_col_letter=None,
-):
-    """
-    month列は実値 YYYY-MM-01 を日付として保持し、表示は yyyy-mm。
-    day列は実値 YYYY-MM-DD を日付として保持し、表示は yyyy-mm-dd。
-    """
-    worksheet = spreadsheet.worksheet(sheet_name)
-
-    requests_body = []
-
-    month_col_index = (
-        ord(month_col_letter.upper())
-        - ord("A")
-    )
-
-    requests_body.append({
-        "repeatCell": {
-            "range": {
-                "sheetId": worksheet.id,
-                "startRowIndex": 1,
-                "startColumnIndex": month_col_index,
-                "endColumnIndex": month_col_index + 1,
-            },
-            "cell": {
-                "userEnteredFormat": {
-                    "numberFormat": {
-                        "type": "DATE",
-                        "pattern": "yyyy-mm",
-                    }
-                }
-            },
-            "fields": "userEnteredFormat.numberFormat",
-        }
-    })
-
-    if day_col_letter:
-        day_col_index = (
-            ord(day_col_letter.upper())
-            - ord("A")
-        )
-
-        requests_body.append({
-            "repeatCell": {
-                "range": {
-                    "sheetId": worksheet.id,
-                    "startRowIndex": 1,
-                    "startColumnIndex": day_col_index,
-                    "endColumnIndex": day_col_index + 1,
-                },
-                "cell": {
-                    "userEnteredFormat": {
-                        "numberFormat": {
-                            "type": "DATE",
-                            "pattern": "yyyy-mm-dd",
-                        }
-                    }
-                },
-                "fields": "userEnteredFormat.numberFormat",
-            }
-        })
-
-    spreadsheet.batch_update({
-        "requests": requests_body
-    })
-
-
 def write_gitreport1(
     spreadsheet,
     rows,
@@ -1452,13 +1396,6 @@ def write_gitreport1(
         rows,
     )
 
-    apply_date_formats(
-        spreadsheet,
-        SHEET_GITREPORT1,
-        month_col_letter="C",
-        day_col_letter="D",
-    )
-
 
 def write_gitreport2(
     spreadsheet,
@@ -1475,12 +1412,6 @@ def write_gitreport2(
         SHEET_GITREPORT2,
         header,
         rows,
-    )
-
-    apply_date_formats(
-        spreadsheet,
-        SHEET_GITREPORT2,
-        month_col_letter="A",
     )
 
 
@@ -1502,12 +1433,6 @@ def write_gitreport3(
         SHEET_GITREPORT3,
         header,
         rows,
-    )
-
-    apply_date_formats(
-        spreadsheet,
-        SHEET_GITREPORT3,
-        month_col_letter="A",
     )
 
 
