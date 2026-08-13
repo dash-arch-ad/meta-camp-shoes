@@ -353,8 +353,27 @@ def fetch_meta_insights(
 
     rows = []
 
+    debug_context = {
+        "level": level,
+        "since": since.strftime("%Y-%m-%d"),
+        "until": until.strftime("%Y-%m-%d"),
+        "time_increment": time_increment,
+        "breakdowns": breakdowns or [],
+        "action_attribution_windows": action_attribution_windows or [],
+        "filtering": filtering or [],
+        "fields": fields,
+    }
+    print("[META REQUEST]", json.dumps(debug_context, ensure_ascii=False))
+
     while True:
-        response = meta_get(url, params=params)
+        try:
+            response = meta_get(url, params=params)
+        except RuntimeError as e:
+            raise RuntimeError(
+                "Meta Insights request failed. "
+                f"context={json.dumps(debug_context, ensure_ascii=False)}; "
+                f"error={e}"
+            ) from e
         payload = response.json()
 
         rows.extend(payload.get("data", []))
@@ -420,8 +439,9 @@ def build_gitreport1_rows(act_id, token, month_ranges):
             ],
             time_increment=1,
             action_attribution_windows=[
-                "1d_view",
+                "1d_click",
                 "7d_click",
+                "1d_view",
                 "incrementality",
             ],
         )
@@ -454,8 +474,9 @@ def build_gitreport1_rows(act_id, token, month_ranges):
             time_increment="monthly",
             breakdowns=["gender", "age"],
             action_attribution_windows=[
-                "1d_view",
+                "1d_click",
                 "7d_click",
+                "1d_view",
                 "incrementality",
             ],
         )
@@ -495,8 +516,9 @@ def build_gitreport1_rows(act_id, token, month_ranges):
                 "device_platform",
             ],
             action_attribution_windows=[
-                "1d_view",
+                "1d_click",
                 "7d_click",
+                "1d_view",
                 "incrementality",
             ],
         )
