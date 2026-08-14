@@ -69,10 +69,8 @@ ADD_TO_CART_CANDIDATES = [
     "add_to_cart",
 ]
 
-LEAD_CANDIDATES = [
-    "omni_lead",
-    "offsite_conversion.fb_pixel_lead",
-    "lead",
+META_LEAD_CANDIDATES = [
+    "onsite_conversion.lead_grouped",
 ]
 
 POST_REACTION_CANDIDATES = [
@@ -1082,7 +1080,7 @@ def extract_default_metrics(
         "lead":
             extract_candidate_value(
                 actions,
-                LEAD_CANDIDATES,
+                META_LEAD_CANDIDATES,
             ),
         "add_to_cart":
             extract_candidate_value(
