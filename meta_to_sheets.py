@@ -20,9 +20,9 @@ SHEET_GITREPORT3 = "gitreport3"
 SHEET_GITREPORT4 = "gitreport4"
 
 GITREPORT1_MONTHS = 13
-GITREPORT2_MONTHS = 2
-GITREPORT3_MONTHS = 2
-GITREPORT4_MONTHS = 2
+GITREPORT2_MONTHS = 3
+GITREPORT3_MONTHS = 3
+GITREPORT4_MONTHS = 3
 
 MAX_RETRIES = 5
 REQUEST_TIMEOUT = 120
@@ -112,7 +112,7 @@ def main():
     ranges_13m = get_month_ranges(
         GITREPORT1_MONTHS
     )
-    ranges_2m = get_month_ranges(
+    ranges_3m = get_month_ranges(
         GITREPORT2_MONTHS
     )
 
@@ -122,15 +122,15 @@ def main():
     )
     print(
         "gitreport2 ranges:",
-        format_ranges(ranges_2m),
+        format_ranges(ranges_3m),
     )
     print(
         "gitreport3 ranges:",
-        format_ranges(ranges_2m),
+        format_ranges(ranges_3m),
     )
     print(
         "gitreport4 ranges:",
-        format_ranges(ranges_2m),
+        format_ranges(ranges_3m),
     )
 
     spreadsheets = connect_spreadsheets(
@@ -160,7 +160,7 @@ def main():
         lambda: build_gitreport2_rows(
             act_id=act_id,
             token=token,
-            month_ranges=ranges_2m,
+            month_ranges=ranges_3m,
         ),
         lambda rows: write_all(
             spreadsheets,
@@ -175,7 +175,7 @@ def main():
         lambda: build_gitreport3_rows(
             act_id=act_id,
             token=token,
-            month_ranges=ranges_2m,
+            month_ranges=ranges_3m,
         ),
         lambda rows: write_all(
             spreadsheets,
@@ -190,7 +190,7 @@ def main():
         lambda: build_gitreport4_rows(
             act_id=act_id,
             token=token,
-            month_ranges=ranges_2m,
+            month_ranges=ranges_3m,
         ),
         lambda rows: write_all(
             spreadsheets,
