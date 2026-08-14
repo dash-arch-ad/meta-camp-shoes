@@ -69,6 +69,12 @@ ADD_TO_CART_CANDIDATES = [
     "add_to_cart",
 ]
 
+LEAD_CANDIDATES = [
+    "omni_lead",
+    "offsite_conversion.fb_pixel_lead",
+    "lead",
+]
+
 POST_REACTION_CANDIDATES = [
     "post_reaction",
 ]
@@ -1073,6 +1079,11 @@ def extract_default_metrics(
                 action_values,
                 PURCHASE_VALUE_CANDIDATES,
             ),
+        "lead":
+            extract_candidate_value(
+                actions,
+                LEAD_CANDIDATES,
+            ),
         "add_to_cart":
             extract_candidate_value(
                 actions,
@@ -1780,6 +1791,9 @@ def build_gitreport3_scope(
                 "sales"
             ],
             default[
+                "lead"
+            ],
+            default[
                 "add_to_cart"
             ],
             default[
@@ -1869,6 +1883,7 @@ def empty_default_metrics():
         "spend": 0.0,
         "purchase": 0.0,
         "sales": 0.0,
+        "lead": 0.0,
         "add_to_cart": 0.0,
         "clicks_all": 0.0,
         "post_reactions": 0.0,
@@ -2276,6 +2291,7 @@ def write_gitreport3(
         "spend",
         "purchase",
         "sales",
+        "lead",
         "add_to_cart",
         "clicks_all",
         "post_reactions",
