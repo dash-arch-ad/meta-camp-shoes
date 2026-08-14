@@ -17,30 +17,23 @@ JST = ZoneInfo("Asia/Tokyo")
 SHEET_GITREPORT1 = "gitreport1"
 SHEET_GITREPORT2 = "gitreport2"
 SHEET_GITREPORT3 = "gitreport3"
+SHEET_GITREPORT4 = "gitreport4"
 
-GITREPORT1_MONTHS = 2
-GITREPORT2_MONTHS = 13
+GITREPORT1_MONTHS = 13
+GITREPORT2_MONTHS = 2
 GITREPORT3_MONTHS = 2
+GITREPORT4_MONTHS = 2
 
 MAX_RETRIES = 5
 REQUEST_TIMEOUT = 120
 
-# gitreport1:
-# APIリクエストでは4windowを指定。
-# 1d_clickは出力には使わない。
+# Meta公式のIncrementality取得用window。
+# 1d_clickは出力には使わないが、APIリクエストには含める。
 ATTRIBUTION_WINDOWS = [
     "1d_click",
     "7d_click",
     "1d_view",
     "incrementality",
-]
-
-# 同一Purchaseを複数action_typeで二重計上しないため、
-# 優先順に最初に存在するものだけ採用。
-PURCHASE_ACTION_TYPES = [
-    "offsite_conversion.fb_pixel_purchase",
-    "omni_purchase",
-    "purchase",
 ]
 
 FILTER_CAMPAIGN_TOTAL_NAMES = {
@@ -56,13 +49,50 @@ AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES = [
     "user_persona_name",
 ]
 
+# 同じ購入が複数action_typeで返るケースがあるため、
+# 合算せず、上から最初に存在するものだけ採用する。
+PURCHASE_COUNT_CANDIDATES = [
+    "omni_purchase",
+    "offsite_conversion.fb_pixel_purchase",
+    "purchase",
+]
+
+PURCHASE_VALUE_CANDIDATES = [
+    "omni_purchase",
+    "purchase",
+    "offsite_conversion.fb_pixel_purchase",
+]
+
+ADD_TO_CART_CANDIDATES = [
+    "omni_add_to_cart",
+    "offsite_conversion.fb_pixel_add_to_cart",
+    "add_to_cart",
+]
+
+POST_REACTION_CANDIDATES = [
+    "post_reaction",
+]
+
+POST_COMMENT_CANDIDATES = [
+    "comment",
+]
+
+POST_SAVE_CANDIDATES = [
+    "post_save",
+]
+
+POST_SHARE_CANDIDATES = [
+    "post_share",
+    "post",
+]
+
 
 # =========================================================
 # Main
 # =========================================================
 
 def main():
-    print("=== Start Meta 3-sheet export ===")
+    print("=== Start Meta 4-sheet export ===")
 
     config = load_secret()
     mask_sensitive_values(config)
@@ -70,15 +100,34 @@ def main():
     resolved = resolve_config(config)
     validate_config(resolved)
 
-    act_id = normalize_meta_act_id(resolved["meta"]["account_id"])
+    act_id = normalize_meta_act_id(
+        resolved["meta"]["account_id"]
+    )
     token = resolved["meta"]["token"]
 
-    ranges_2m = get_month_ranges(GITREPORT1_MONTHS)
-    ranges_13m = get_month_ranges(GITREPORT2_MONTHS)
+    ranges_13m = get_month_ranges(
+        GITREPORT1_MONTHS
+    )
+    ranges_2m = get_month_ranges(
+        GITREPORT2_MONTHS
+    )
 
-    print("gitreport1 ranges:", format_ranges(ranges_2m))
-    print("gitreport2 ranges:", format_ranges(ranges_13m))
-    print("gitreport3 ranges:", format_ranges(ranges_2m))
+    print(
+        "gitreport1 ranges:",
+        format_ranges(ranges_13m),
+    )
+    print(
+        "gitreport2 ranges:",
+        format_ranges(ranges_2m),
+    )
+    print(
+        "gitreport3 ranges:",
+        format_ranges(ranges_2m),
+    )
+    print(
+        "gitreport4 ranges:",
+        format_ranges(ranges_2m),
+    )
 
     spreadsheets = connect_spreadsheets(
         sheet_ids=resolved["sheet"]["spreadsheet_ids"],
@@ -87,71 +136,66 @@ def main():
 
     failures = []
 
-    # -----------------------------------------------------
-    # gitreport1
-    # -----------------------------------------------------
-    try:
-        print("\n=== Start gitreport1 ===")
-        rows1 = build_gitreport1_rows(
-            act_id=act_id,
-            token=token,
-            month_ranges=ranges_2m,
-        )
-        print(f"gitreport1 rows built: {len(rows1)}")
-
-        for spreadsheet in spreadsheets:
-            write_gitreport1(spreadsheet, rows1)
-
-        print("=== Completed gitreport1 ===")
-
-    except Exception as e:
-        failures.append(("gitreport1", e))
-        print(f"=== FAILED gitreport1: {repr(e)} ===")
-
-    # -----------------------------------------------------
-    # gitreport2
-    # -----------------------------------------------------
-    try:
-        print("\n=== Start gitreport2 ===")
-        rows2 = build_gitreport2_rows(
+    run_export(
+        "gitreport1",
+        lambda: build_gitreport1_rows(
             act_id=act_id,
             token=token,
             month_ranges=ranges_13m,
-        )
-        print(f"gitreport2 rows built: {len(rows2)}")
+        ),
+        lambda rows: write_all(
+            spreadsheets,
+            write_gitreport1,
+            rows,
+        ),
+        failures,
+    )
 
-        for spreadsheet in spreadsheets:
-            write_gitreport2(spreadsheet, rows2)
-
-        print("=== Completed gitreport2 ===")
-
-    except Exception as e:
-        failures.append(("gitreport2", e))
-        print(f"=== FAILED gitreport2: {repr(e)} ===")
-
-    # -----------------------------------------------------
-    # gitreport3
-    # -----------------------------------------------------
-    try:
-        print("\n=== Start gitreport3 ===")
-        rows3 = build_gitreport3_rows(
+    run_export(
+        "gitreport2",
+        lambda: build_gitreport2_rows(
             act_id=act_id,
             token=token,
             month_ranges=ranges_2m,
-        )
-        print(f"gitreport3 rows built: {len(rows3)}")
+        ),
+        lambda rows: write_all(
+            spreadsheets,
+            write_gitreport2,
+            rows,
+        ),
+        failures,
+    )
 
-        for spreadsheet in spreadsheets:
-            write_gitreport3(spreadsheet, rows3)
+    run_export(
+        "gitreport3",
+        lambda: build_gitreport3_rows(
+            act_id=act_id,
+            token=token,
+            month_ranges=ranges_2m,
+        ),
+        lambda rows: write_all(
+            spreadsheets,
+            write_gitreport3,
+            rows,
+        ),
+        failures,
+    )
 
-        print("=== Completed gitreport3 ===")
+    run_export(
+        "gitreport4",
+        lambda: build_gitreport4_rows(
+            act_id=act_id,
+            token=token,
+            month_ranges=ranges_2m,
+        ),
+        lambda rows: write_all(
+            spreadsheets,
+            write_gitreport4,
+            rows,
+        ),
+        failures,
+    )
 
-    except Exception as e:
-        failures.append(("gitreport3", e))
-        print(f"=== FAILED gitreport3: {repr(e)} ===")
-
-    # 他シートを最後まで実行したうえで、
-    # 失敗があればActions自体はfailedにする。
     if failures:
         summary = " | ".join(
             f"{name}: {repr(err)}"
@@ -161,7 +205,49 @@ def main():
             f"One or more sheet exports failed: {summary}"
         )
 
-    print("\n=== All exports completed ===")
+    print("=== All exports completed ===")
+
+
+def run_export(
+    name,
+    build_func,
+    write_func,
+    failures,
+):
+    print(f"\n=== Start {name} ===")
+
+    try:
+        rows = build_func()
+        print(
+            f"{name} rows built: {len(rows)}"
+        )
+
+        write_func(rows)
+
+        print(
+            f"=== Completed {name} ==="
+        )
+
+    except Exception as e:
+        failures.append(
+            (name, e)
+        )
+        print(
+            f"=== FAILED {name}: "
+            f"{repr(e)} ==="
+        )
+
+
+def write_all(
+    spreadsheets,
+    writer,
+    rows,
+):
+    for spreadsheet in spreadsheets:
+        writer(
+            spreadsheet,
+            rows,
+        )
 
 
 # =========================================================
@@ -169,12 +255,18 @@ def main():
 # =========================================================
 
 def load_secret():
-    raw = os.environ.get("APP_SECRET_JSON")
+    raw = os.environ.get(
+        "APP_SECRET_JSON"
+    )
+
     if not raw:
-        raise RuntimeError("APP_SECRET_JSON is not set")
+        raise RuntimeError(
+            "APP_SECRET_JSON is not set"
+        )
 
     try:
         return json.loads(raw)
+
     except json.JSONDecodeError as e:
         raise RuntimeError(
             f"APP_SECRET_JSON is invalid JSON: {e}"
@@ -182,29 +274,57 @@ def load_secret():
 
 
 def mask_sensitive_values(config):
-    meta = config.get("meta", {})
+    meta = config.get(
+        "meta",
+        {},
+    )
 
     for value in [
         meta.get("token"),
         meta.get("account_id"),
     ]:
-        if value:
-            value = str(value).strip()
+        if not value:
+            continue
 
-            if value and "\n" not in value:
-                print(f"::add-mask::{value}")
+        value = str(
+            value
+        ).strip()
+
+        if value and "\n" not in value:
+            print(
+                f"::add-mask::{value}"
+            )
 
 
 def resolve_config(config):
-    meta = config.get("meta", {})
-    sheets = config.get("sheets", {})
-    gcp = config.get("gcp_service_account")
+    meta = config.get(
+        "meta",
+        {},
+    )
+    sheets = config.get(
+        "sheets",
+        {},
+    )
+    gcp = config.get(
+        "gcp_service_account"
+    )
 
-    spreadsheet_ids = sheets.get("spreadsheet_id")
+    spreadsheet_ids = sheets.get(
+        "spreadsheet_id"
+    )
 
-    if isinstance(spreadsheet_ids, str):
-        spreadsheet_ids = [spreadsheet_ids]
-    elif not isinstance(spreadsheet_ids, list):
+    if isinstance(
+        spreadsheet_ids,
+        str,
+    ):
+        spreadsheet_ids = [
+            spreadsheet_ids
+        ]
+
+    elif not isinstance(
+        spreadsheet_ids,
+        list,
+    ):
         spreadsheet_ids = []
 
     spreadsheet_ids = [
@@ -215,21 +335,30 @@ def resolve_config(config):
 
     return {
         "meta": {
-            "token": meta.get("token"),
-            "account_id": meta.get("account_id"),
+            "token": meta.get(
+                "token"
+            ),
+            "account_id": meta.get(
+                "account_id"
+            ),
         },
         "sheet": {
-            "spreadsheet_ids": spreadsheet_ids,
+            "spreadsheet_ids":
+                spreadsheet_ids,
             "google_service_account":
-                normalize_google_service_account(gcp),
+                normalize_google_service_account(
+                    gcp
+                ),
         },
     }
 
 
 def validate_config(resolved):
     required = {
-        "meta.token": resolved["meta"]["token"],
-        "meta.account_id": resolved["meta"]["account_id"],
+        "meta.token":
+            resolved["meta"]["token"],
+        "meta.account_id":
+            resolved["meta"]["account_id"],
         "sheets.spreadsheet_id":
             resolved["sheet"]["spreadsheet_ids"],
         "gcp_service_account":
@@ -244,19 +373,30 @@ def validate_config(resolved):
 
     if missing:
         raise RuntimeError(
-            f"Missing required config keys: {', '.join(missing)}"
+            "Missing required config keys: "
+            + ", ".join(missing)
         )
 
 
-def normalize_google_service_account(creds):
+def normalize_google_service_account(
+    creds,
+):
     if not creds:
         return None
 
-    fixed = dict(creds)
-    private_key = fixed.get("private_key", "")
+    fixed = dict(
+        creds
+    )
+
+    private_key = fixed.get(
+        "private_key",
+        "",
+    )
 
     if private_key:
-        fixed["private_key"] = private_key.replace(
+        fixed[
+            "private_key"
+        ] = private_key.replace(
             "\\n",
             "\n",
         )
@@ -264,7 +404,9 @@ def normalize_google_service_account(creds):
     return fixed
 
 
-def normalize_meta_act_id(raw_act_id):
+def normalize_meta_act_id(
+    raw_act_id,
+):
     cleaned = (
         str(raw_act_id)
         .replace("act=", "")
@@ -280,10 +422,25 @@ def normalize_meta_act_id(raw_act_id):
 # Date helpers
 # =========================================================
 
-def add_months(base_date, months):
-    month = base_date.month - 1 + months
-    year = base_date.year + month // 12
-    month = month % 12 + 1
+def add_months(
+    base_date,
+    months,
+):
+    month = (
+        base_date.month
+        - 1
+        + months
+    )
+
+    year = (
+        base_date.year
+        + month // 12
+    )
+
+    month = (
+        month % 12
+        + 1
+    )
 
     return date(
         year,
@@ -292,19 +449,27 @@ def add_months(base_date, months):
     )
 
 
-def get_month_ranges(month_count):
+def get_month_ranges(
+    month_count,
+):
     """
     JST基準。
 
-    例: 2026-08-13実行 / 2ヶ月
+    例: 2026-08-14実行 / 2ヶ月
       2026-07-01 ～ 2026-07-31
-      2026-08-01 ～ 2026-08-12
+      2026-08-01 ～ 2026-08-13
 
-    1日実行時は当月に対象日がないため、
-    前月を最新月として指定月数分取得。
+    当月は前日まで。
+    1日実行時は前月を最新月とする。
     """
-    today_jst = datetime.now(JST).date()
-    yesterday = today_jst - timedelta(days=1)
+    today_jst = datetime.now(
+        JST
+    ).date()
+
+    yesterday = (
+        today_jst
+        - timedelta(days=1)
+    )
 
     this_month_start = date(
         today_jst.year,
@@ -318,7 +483,9 @@ def get_month_ranges(month_count):
             -1,
         )
     else:
-        end_month_start = this_month_start
+        end_month_start = (
+            this_month_start
+        )
 
     start_month = add_months(
         end_month_start,
@@ -329,10 +496,16 @@ def get_month_ranges(month_count):
     current = start_month
 
     while current <= end_month_start:
-        next_month = add_months(current, 1)
-        natural_month_end = (
-            next_month - timedelta(days=1)
+        next_month = add_months(
+            current,
+            1,
         )
+
+        natural_month_end = (
+            next_month
+            - timedelta(days=1)
+        )
+
         until = min(
             natural_month_end,
             yesterday,
@@ -340,9 +513,14 @@ def get_month_ranges(month_count):
 
         if current <= until:
             ranges.append({
-                "label": current.strftime("%Y-%m"),
-                "since": current,
-                "until": until,
+                "label":
+                    current.strftime(
+                        "%Y-%m"
+                    ),
+                "since":
+                    current,
+                "until":
+                    until,
             })
 
         current = next_month
@@ -350,46 +528,75 @@ def get_month_ranges(month_count):
     return ranges
 
 
-def iter_dates(since, until):
+def iter_dates(
+    since,
+    until,
+):
     current = since
 
     while current <= until:
         yield current
-        current += timedelta(days=1)
+        current += timedelta(
+            days=1
+        )
 
 
-def to_sheets_date_serial(value):
+def to_sheets_date_serial(
+    value,
+):
     """
-    Google Sheetsの日付シリアル値に変換する。
-    表示形式はスプレッドシート側の設定をそのまま使用する。
+    Google Sheetsへ日付型として扱える数値を出力。
+    表示形式はスプレッドシート側で設定する。
     """
     if not value:
         return ""
 
-    if isinstance(value, date):
+    if isinstance(
+        value,
+        date,
+    ):
         d = value
     else:
-        d = datetime.strptime(str(value), "%Y-%m-%d").date()
+        d = datetime.strptime(
+            str(value),
+            "%Y-%m-%d",
+        ).date()
 
-    base = date(1899, 12, 30)
-    return (d - base).days
+    base = date(
+        1899,
+        12,
+        30,
+    )
+
+    return (
+        d - base
+    ).days
 
 
-def format_ranges(ranges):
+def format_ranges(
+    ranges,
+):
     return ", ".join(
-        f"{r['label']}({r['since']} to {r['until']})"
+        f"{r['label']}"
+        f"({r['since']} to {r['until']})"
         for r in ranges
     )
 
 
 # =========================================================
-# Meta generic requests
+# Meta API
 # =========================================================
 
-def meta_get(url, params=None):
+def meta_get(
+    url,
+    params=None,
+):
     last_error = None
 
-    for attempt in range(1, MAX_RETRIES + 1):
+    for attempt in range(
+        1,
+        MAX_RETRIES + 1,
+    ):
         try:
             response = requests.get(
                 url,
@@ -405,8 +612,13 @@ def meta_get(url, params=None):
             if (
                 response.ok
                 and not (
-                    isinstance(payload, dict)
-                    and payload.get("error")
+                    isinstance(
+                        payload,
+                        dict,
+                    )
+                    and payload.get(
+                        "error"
+                    )
                 )
             ):
                 return response
@@ -427,14 +639,23 @@ def meta_get(url, params=None):
             )
 
             retryable = (
-                response.status_code >= 500
+                response.status_code
+                >= 500
             )
 
             if (
-                isinstance(payload, dict)
-                and payload.get("error")
+                isinstance(
+                    payload,
+                    dict,
+                )
+                and payload.get(
+                    "error"
+                )
             ):
-                code = payload["error"].get("code")
+                code = (
+                    payload["error"]
+                    .get("code")
+                )
 
                 if code in (
                     1,
@@ -448,7 +669,8 @@ def meta_get(url, params=None):
 
             if (
                 not retryable
-                or attempt == MAX_RETRIES
+                or attempt
+                == MAX_RETRIES
             ):
                 raise last_error
 
@@ -457,21 +679,27 @@ def meta_get(url, params=None):
 
             if attempt == MAX_RETRIES:
                 raise RuntimeError(
-                    f"Meta request error: {repr(e)}"
+                    "Meta request error: "
+                    f"{repr(e)}"
                 ) from e
 
-        wait_sec = 2 ** (attempt - 1)
+        wait_sec = (
+            2 ** (attempt - 1)
+        )
 
         print(
-            f"Meta retry "
+            "Meta retry "
             f"{attempt}/{MAX_RETRIES}, "
             f"sleep={wait_sec}s"
         )
 
-        time.sleep(wait_sec)
+        time.sleep(
+            wait_sec
+        )
 
     raise RuntimeError(
-        f"Meta API request failed: {last_error}"
+        "Meta API request failed: "
+        f"{last_error}"
     )
 
 
@@ -482,35 +710,42 @@ def fetch_meta_insights(
     until,
     level,
     fields,
-    time_increment=None,
     breakdowns=None,
     action_attribution_windows=None,
     filtering=None,
 ):
     url = (
-        f"https://graph.facebook.com/"
+        "https://graph.facebook.com/"
         f"{META_API_VERSION}/"
         f"{act_id}/insights"
     )
 
     params = {
-        "access_token": token,
-        "level": level,
-        "time_range": json.dumps({
-            "since": since.strftime("%Y-%m-%d"),
-            "until": until.strftime("%Y-%m-%d"),
-        }),
-        "fields": ",".join(fields),
-        "limit": 5000,
+        "access_token":
+            token,
+        "level":
+            level,
+        "time_range":
+            json.dumps({
+                "since":
+                    since.strftime(
+                        "%Y-%m-%d"
+                    ),
+                "until":
+                    until.strftime(
+                        "%Y-%m-%d"
+                    ),
+            }),
+        "fields":
+            ",".join(fields),
+        "limit":
+            5000,
     }
 
-    if time_increment is not None:
-        params["time_increment"] = str(
-            time_increment
-        )
-
     if breakdowns:
-        params["breakdowns"] = ",".join(
+        params[
+            "breakdowns"
+        ] = ",".join(
             breakdowns
         )
 
@@ -522,21 +757,32 @@ def fetch_meta_insights(
         )
 
     if filtering:
-        params["filtering"] = json.dumps(
+        params[
+            "filtering"
+        ] = json.dumps(
             filtering,
             ensure_ascii=False,
         )
 
     context = {
-        "level": level,
-        "since": since.strftime("%Y-%m-%d"),
-        "until": until.strftime("%Y-%m-%d"),
-        "time_increment": time_increment,
-        "breakdowns": breakdowns or [],
+        "level":
+            level,
+        "since":
+            since.strftime(
+                "%Y-%m-%d"
+            ),
+        "until":
+            until.strftime(
+                "%Y-%m-%d"
+            ),
+        "breakdowns":
+            breakdowns or [],
         "action_attribution_windows":
             action_attribution_windows or [],
-        "filtering": filtering or [],
-        "fields": fields,
+        "filtering":
+            filtering or [],
+        "fields":
+            fields,
     }
 
     print(
@@ -555,10 +801,11 @@ def fetch_meta_insights(
                 url,
                 params=params,
             )
+
         except RuntimeError as e:
             raise RuntimeError(
                 "Meta Insights request failed. "
-                f"context="
+                "context="
                 f"{json.dumps(context, ensure_ascii=False)}; "
                 f"error={e}"
             ) from e
@@ -566,12 +813,18 @@ def fetch_meta_insights(
         payload = response.json()
 
         rows.extend(
-            payload.get("data", [])
+            payload.get(
+                "data",
+                [],
+            )
         )
 
         next_url = (
             payload
-            .get("paging", {})
+            .get(
+                "paging",
+                {},
+            )
             .get("next")
         )
 
@@ -585,7 +838,280 @@ def fetch_meta_insights(
 
 
 # =========================================================
+# Common action extractors
+# =========================================================
+
+def action_map(
+    action_list,
+):
+    result = {}
+
+    if not isinstance(
+        action_list,
+        list,
+    ):
+        return result
+
+    for action in action_list:
+        if not isinstance(
+            action,
+            dict,
+        ):
+            continue
+
+        action_type = action.get(
+            "action_type"
+        )
+
+        if action_type:
+            result[
+                str(action_type)
+            ] = action
+
+    return result
+
+
+def extract_candidate_window(
+    action_list,
+    candidates,
+    window_key,
+):
+    amap = action_map(
+        action_list
+    )
+
+    for candidate in candidates:
+        action = amap.get(
+            candidate
+        )
+
+        if action is not None:
+            return to_float(
+                action.get(
+                    window_key
+                )
+            )
+
+    return 0.0
+
+
+def extract_candidate_value(
+    action_list,
+    candidates,
+):
+    amap = action_map(
+        action_list
+    )
+
+    for candidate in candidates:
+        action = amap.get(
+            candidate
+        )
+
+        if action is not None:
+            return to_float(
+                action.get(
+                    "value"
+                )
+            )
+
+    return 0.0
+
+
+def extract_attribution_metrics(
+    item,
+):
+    actions = item.get(
+        "actions",
+        [],
+    )
+
+    action_values = item.get(
+        "action_values",
+        [],
+    )
+
+    cv_view_1d = extract_candidate_window(
+        actions,
+        PURCHASE_COUNT_CANDIDATES,
+        "1d_view",
+    )
+
+    cv_click_7d = extract_candidate_window(
+        actions,
+        PURCHASE_COUNT_CANDIDATES,
+        "7d_click",
+    )
+
+    cv_incr = extract_candidate_window(
+        actions,
+        PURCHASE_COUNT_CANDIDATES,
+        "incrementality",
+    )
+
+    sale_view_1d = extract_candidate_window(
+        action_values,
+        PURCHASE_VALUE_CANDIDATES,
+        "1d_view",
+    )
+
+    sales_click_7d = extract_candidate_window(
+        action_values,
+        PURCHASE_VALUE_CANDIDATES,
+        "7d_click",
+    )
+
+    sales_incr = extract_candidate_window(
+        action_values,
+        PURCHASE_VALUE_CANDIDATES,
+        "incrementality",
+    )
+
+    return {
+        "cv_view_1d":
+            cv_view_1d,
+        "cv_click_7d":
+            cv_click_7d,
+        "cv_view1d_click7d":
+            cv_view_1d
+            + cv_click_7d,
+        "cv_incr":
+            cv_incr,
+        "sale_view_1d":
+            sale_view_1d,
+        "sales_click_7d":
+            sales_click_7d,
+        "sales_view1d_click7d":
+            sale_view_1d
+            + sales_click_7d,
+        "sales_incr":
+            sales_incr,
+    }
+
+
+def attribution_metric_values(
+    metrics,
+):
+    return [
+        metrics.get(
+            "cv_view_1d",
+            0.0,
+        ),
+        metrics.get(
+            "cv_click_7d",
+            0.0,
+        ),
+        metrics.get(
+            "cv_view1d_click7d",
+            0.0,
+        ),
+        metrics.get(
+            "cv_incr",
+            0.0,
+        ),
+        metrics.get(
+            "sale_view_1d",
+            0.0,
+        ),
+        metrics.get(
+            "sales_click_7d",
+            0.0,
+        ),
+        metrics.get(
+            "sales_view1d_click7d",
+            0.0,
+        ),
+        metrics.get(
+            "sales_incr",
+            0.0,
+        ),
+    ]
+
+
+def extract_default_metrics(
+    item,
+):
+    actions = item.get(
+        "actions",
+        [],
+    )
+
+    action_values = item.get(
+        "action_values",
+        [],
+    )
+
+    return {
+        "impressions":
+            to_int(
+                item.get(
+                    "impressions"
+                )
+            ),
+        "link_clicks":
+            to_float(
+                item.get(
+                    "inline_link_clicks"
+                )
+            ),
+        "spend":
+            round(
+                to_float(
+                    item.get(
+                        "spend"
+                    )
+                ) * 1.2,
+                6,
+            ),
+        "purchase":
+            extract_candidate_value(
+                actions,
+                PURCHASE_COUNT_CANDIDATES,
+            ),
+        "sales":
+            extract_candidate_value(
+                action_values,
+                PURCHASE_VALUE_CANDIDATES,
+            ),
+        "add_to_cart":
+            extract_candidate_value(
+                actions,
+                ADD_TO_CART_CANDIDATES,
+            ),
+        "clicks_all":
+            to_float(
+                item.get(
+                    "clicks"
+                )
+            ),
+        "post_reactions":
+            extract_candidate_value(
+                actions,
+                POST_REACTION_CANDIDATES,
+            ),
+        "post_comments":
+            extract_candidate_value(
+                actions,
+                POST_COMMENT_CANDIDATES,
+            ),
+        "post_saves":
+            extract_candidate_value(
+                actions,
+                POST_SAVE_CANDIDATES,
+            ),
+        "post_shares":
+            extract_candidate_value(
+                actions,
+                POST_SHARE_CANDIDATES,
+            ),
+    }
+
+
+# =========================================================
 # gitreport1
+# campaign / campaign group
+# past 13 months
+# reach + attribution CV / sales
 # =========================================================
 
 def build_gitreport1_rows(
@@ -593,37 +1119,201 @@ def build_gitreport1_rows(
     token,
     month_ranges,
 ):
-    """
-    scope:
-      campaign_day
-        月 × 日 × キャンペーン
-        → API安定性を優先して1日ずつ取得
-
-      ad
-        月 × 広告
-
-      adset_gen_age
-        月 × 広告セット × 性別 × 年齢
-
-      adset_pm
-        月 × 広告セット ×
-        platform × placement × device_platform
-    """
     rows = []
 
     for month_range in month_ranges:
+        month_serial = (
+            to_sheets_date_serial(
+                month_range["since"]
+            )
+        )
 
-        # -------------------------------------------------
+        print(
+            "[gitreport1] "
+            "Fetching campaign: "
+            f"{month_range['label']}"
+        )
+
+        campaign_rows = fetch_meta_insights(
+            act_id=act_id,
+            token=token,
+            since=month_range["since"],
+            until=month_range["until"],
+            level="campaign",
+            fields=[
+                "campaign_name",
+                "reach",
+                "actions",
+                "action_values",
+            ],
+            action_attribution_windows=
+                ATTRIBUTION_WINDOWS,
+        )
+
+        for item in campaign_rows:
+            attr = (
+                extract_attribution_metrics(
+                    item
+                )
+            )
+
+            rows.append([
+                month_serial,
+                item.get(
+                    "campaign_name",
+                    "",
+                ),
+                to_int(
+                    item.get(
+                        "reach"
+                    )
+                ),
+                *attribution_metric_values(
+                    attr
+                ),
+            ])
+
+        for keyword, total_name in (
+            FILTER_CAMPAIGN_TOTAL_NAMES.items()
+        ):
+            print(
+                "[gitreport1] "
+                "Fetching campaign group: "
+                f"{month_range['label']} / "
+                f"{keyword}"
+            )
+
+            total_rows = fetch_meta_insights(
+                act_id=act_id,
+                token=token,
+                since=month_range["since"],
+                until=month_range["until"],
+                level="account",
+                fields=[
+                    "reach",
+                    "actions",
+                    "action_values",
+                ],
+                filtering=[
+                    {
+                        "field":
+                            "campaign.name",
+                        "operator":
+                            "CONTAIN",
+                        "value":
+                            keyword,
+                    }
+                ],
+                action_attribution_windows=
+                    ATTRIBUTION_WINDOWS,
+            )
+
+            if total_rows:
+                # account level + 1ヶ月rangeでは通常1行。
+                # 複数行なら各指標を安全に加算。
+                reach = 0
+                summed = empty_attr_metrics()
+
+                for item in total_rows:
+                    reach += to_int(
+                        item.get(
+                            "reach"
+                        )
+                    )
+
+                    add_attr_metrics(
+                        summed,
+                        extract_attribution_metrics(
+                            item
+                        ),
+                    )
+
+                rows.append([
+                    month_serial,
+                    total_name,
+                    reach,
+                    *attribution_metric_values(
+                        summed
+                    ),
+                ])
+
+            else:
+                rows.append([
+                    month_serial,
+                    total_name,
+                    0,
+                    *attribution_metric_values(
+                        empty_attr_metrics()
+                    ),
+                ])
+
+    return sorted(
+        rows,
+        key=lambda r: (
+            r[0],
+            r[1],
+        ),
+    )
+
+
+def empty_attr_metrics():
+    return {
+        "cv_view_1d": 0.0,
+        "cv_click_7d": 0.0,
+        "cv_view1d_click7d": 0.0,
+        "cv_incr": 0.0,
+        "sale_view_1d": 0.0,
+        "sales_click_7d": 0.0,
+        "sales_view1d_click7d": 0.0,
+        "sales_incr": 0.0,
+    }
+
+
+def add_attr_metrics(
+    target,
+    source,
+):
+    for key in target.keys():
+        target[key] += to_float(
+            source.get(
+                key,
+                0.0,
+            )
+        )
+
+
+# =========================================================
+# gitreport2
+# campaign_day / ad / campaign_gen_age / campaign_pf
+# past 2 months
+# attribution CV / sales
+# =========================================================
+
+def build_gitreport2_rows(
+    act_id,
+    token,
+    month_ranges,
+):
+    rows = []
+
+    for month_range in month_ranges:
+        month_serial = (
+            to_sheets_date_serial(
+                month_range["since"]
+            )
+        )
+
+        # ---------------------------------------------
         # campaign_day
-        # 1日ずつ取得
-        # -------------------------------------------------
+        # API安定性優先: 1日ずつ取得
+        # ---------------------------------------------
         for target_day in iter_dates(
             month_range["since"],
             month_range["until"],
         ):
             print(
-                f"[gitreport1] "
-                f"Fetching campaign_day: "
+                "[gitreport2] "
+                "Fetching campaign_day: "
                 f"{target_day:%Y-%m-%d}"
             )
 
@@ -643,21 +1333,29 @@ def build_gitreport1_rows(
             )
 
             for item in batch:
-                rows.append(
-                    make_gitreport1_row(
-                        scope="campaign_day",
-                        month=to_sheets_date_serial(month_range["since"]),
-                        day=to_sheets_date_serial(target_day),
-                        item=item,
+                attr = (
+                    extract_attribution_metrics(
+                        item
                     )
                 )
 
-        # -------------------------------------------------
+                rows.append(
+                    make_gitreport2_row(
+                        scope="campaign_day",
+                        month=month_serial,
+                        day=to_sheets_date_serial(
+                            target_day
+                        ),
+                        item=item,
+                        attr=attr,
+                    )
+                )
+
+        # ---------------------------------------------
         # ad
-        # 月 × 広告
-        # -------------------------------------------------
+        # ---------------------------------------------
         print(
-            f"[gitreport1] "
+            "[gitreport2] "
             f"Fetching ad: "
             f"{month_range['label']}"
         )
@@ -681,20 +1379,23 @@ def build_gitreport1_rows(
 
         for item in batch:
             rows.append(
-                make_gitreport1_row(
+                make_gitreport2_row(
                     scope="ad",
-                    month=to_sheets_date_serial(month_range["since"]),
+                    month=month_serial,
                     day="",
                     item=item,
+                    attr=extract_attribution_metrics(
+                        item
+                    ),
                 )
             )
 
-        # -------------------------------------------------
-        # adset_gen_age
-        # -------------------------------------------------
+        # ---------------------------------------------
+        # campaign_gen_age
+        # ---------------------------------------------
         print(
-            f"[gitreport1] "
-            f"Fetching adset_gen_age: "
+            "[gitreport2] "
+            "Fetching campaign_gen_age: "
             f"{month_range['label']}"
         )
 
@@ -703,10 +1404,9 @@ def build_gitreport1_rows(
             token=token,
             since=month_range["since"],
             until=month_range["until"],
-            level="adset",
+            level="campaign",
             fields=[
                 "campaign_name",
-                "adset_name",
                 "actions",
                 "action_values",
             ],
@@ -720,9 +1420,9 @@ def build_gitreport1_rows(
 
         for item in batch:
             rows.append(
-                make_gitreport1_row(
-                    scope="adset_gen_age",
-                    month=to_sheets_date_serial(month_range["since"]),
+                make_gitreport2_row(
+                    scope="campaign_gen_age",
+                    month=month_serial,
                     day="",
                     item=item,
                     gender=item.get(
@@ -733,15 +1433,18 @@ def build_gitreport1_rows(
                         "age",
                         "",
                     ),
+                    attr=extract_attribution_metrics(
+                        item
+                    ),
                 )
             )
 
-        # -------------------------------------------------
-        # adset_pm
-        # -------------------------------------------------
+        # ---------------------------------------------
+        # campaign_pf
+        # ---------------------------------------------
         print(
-            f"[gitreport1] "
-            f"Fetching adset_pm: "
+            "[gitreport2] "
+            "Fetching campaign_pf: "
             f"{month_range['label']}"
         )
 
@@ -750,17 +1453,14 @@ def build_gitreport1_rows(
             token=token,
             since=month_range["since"],
             until=month_range["until"],
-            level="adset",
+            level="campaign",
             fields=[
                 "campaign_name",
-                "adset_name",
                 "actions",
                 "action_values",
             ],
             breakdowns=[
                 "publisher_platform",
-                "platform_position",
-                "device_platform",
             ],
             action_attribution_windows=
                 ATTRIBUTION_WINDOWS,
@@ -768,150 +1468,422 @@ def build_gitreport1_rows(
 
         for item in batch:
             rows.append(
-                make_gitreport1_row(
-                    scope="adset_pm",
-                    month=to_sheets_date_serial(month_range["since"]),
+                make_gitreport2_row(
+                    scope="campaign_pf",
+                    month=month_serial,
                     day="",
                     item=item,
                     platform=item.get(
                         "publisher_platform",
                         "",
                     ),
-                    placement=item.get(
-                        "platform_position",
-                        "",
-                    ),
-                    device_platform=item.get(
-                        "device_platform",
-                        "",
+                    attr=extract_attribution_metrics(
+                        item
                     ),
                 )
             )
 
-    return sort_gitreport1(rows)
+    return sort_gitreport2(
+        rows
+    )
 
 
-def make_gitreport1_row(
+def make_gitreport2_row(
     scope,
     month,
     day,
     item,
+    attr,
     gender="",
     age="",
     platform="",
-    placement="",
-    device_platform="",
 ):
-    actions = item.get(
-        "actions",
-        [],
-    )
-    action_values = item.get(
-        "action_values",
-        [],
-    )
-
-    cv_view_1d = extract_purchase_window(
-        actions,
-        "1d_view",
-    )
-
-    cv_click_7d = extract_purchase_window(
-        actions,
-        "7d_click",
-    )
-
-    cv_incr = extract_purchase_window(
-        actions,
-        "incrementality",
-    )
-
-    sale_view_1d = extract_purchase_window(
-        action_values,
-        "1d_view",
-    )
-
-    sales_click_7d = extract_purchase_window(
-        action_values,
-        "7d_click",
-    )
-
-    sales_incr = extract_purchase_window(
-        action_values,
-        "incrementality",
-    )
-
     return [
-        "meta",                           # A media
-        scope,                            # B scope
-        month,                            # C month
-        day,                              # D day
-        item.get("campaign_name", ""),    # E campaign_name
-        item.get("adset_name", ""),       # F adset_name
-        item.get("ad_name", ""),          # G ad_name
-        gender,                           # H gender
-        age,                              # I age
-        platform,                         # J platform
-        placement,                        # K placement
-        device_platform,                  # L device_platform
-        cv_view_1d,                       # M cv_view_1d
-        cv_click_7d,                      # N cv_click_7d
-        cv_view_1d + cv_click_7d,         # O cv_view1d_click7d
-        cv_incr,                          # P cv_incr
-        sale_view_1d,                     # Q sale_view_1d
-        sales_click_7d,                   # R sales_click_7d
-        sale_view_1d + sales_click_7d,    # S sales_view1d_click7d
-        sales_incr,                       # T sales_incr
+        "meta",
+        scope,
+        month,
+        day,
+        item.get(
+            "campaign_name",
+            "",
+        ),
+        item.get(
+            "adset_name",
+            "",
+        ),
+        item.get(
+            "ad_name",
+            "",
+        ),
+        gender,
+        age,
+        platform,
+        *attribution_metric_values(
+            attr
+        ),
     ]
 
 
-def extract_purchase_window(
-    action_list,
-    window_key,
+def sort_gitreport2(
+    rows,
 ):
-    if not isinstance(
-        action_list,
-        list,
-    ):
-        return 0.0
-
-    action_map = {}
-
-    for action in action_list:
-        if not isinstance(
-            action,
-            dict,
-        ):
-            continue
-
-        action_type = action.get(
-            "action_type"
-        )
-
-        if action_type:
-            action_map[
-                action_type
-            ] = action
-
-    for action_type in PURCHASE_ACTION_TYPES:
-        action = action_map.get(
-            action_type
-        )
-
-        if action is not None:
-            return to_float(
-                action.get(window_key)
-            )
-
-    return 0.0
-
-
-def sort_gitreport1(rows):
     scope_order = {
         "campaign_day": 0,
         "ad": 1,
-        "adset_gen_age": 2,
-        "adset_pm": 3,
+        "campaign_gen_age": 2,
+        "campaign_pf": 3,
+    }
+
+    return sorted(
+        rows,
+        key=lambda r: (
+            r[2],
+            scope_order.get(
+                r[1],
+                99,
+            ),
+            r[3] if r[3] != "" else 0,
+            r[4],
+            r[5],
+            r[6],
+            r[7],
+            r[8],
+            r[9],
+        ),
+    )
+
+
+# =========================================================
+# gitreport3
+# adset_gen_age / adset_pm
+# past 2 months
+# normal metrics + default CV + attribution CV/sales
+# =========================================================
+
+def build_gitreport3_rows(
+    act_id,
+    token,
+    month_ranges,
+):
+    rows = []
+
+    for month_range in month_ranges:
+        month_serial = (
+            to_sheets_date_serial(
+                month_range["since"]
+            )
+        )
+
+        # ---------------------------------------------
+        # adset_gen_age
+        # ---------------------------------------------
+        rows.extend(
+            build_gitreport3_scope(
+                act_id=act_id,
+                token=token,
+                month_range=month_range,
+                month_serial=month_serial,
+                scope="adset_gen_age",
+                breakdowns=[
+                    "gender",
+                    "age",
+                ],
+            )
+        )
+
+        # ---------------------------------------------
+        # adset_pm
+        # ---------------------------------------------
+        rows.extend(
+            build_gitreport3_scope(
+                act_id=act_id,
+                token=token,
+                month_range=month_range,
+                month_serial=month_serial,
+                scope="adset_pm",
+                breakdowns=[
+                    "publisher_platform",
+                    "platform_position",
+                    "device_platform",
+                ],
+            )
+        )
+
+    return sort_gitreport3(
+        rows
+    )
+
+
+def build_gitreport3_scope(
+    act_id,
+    token,
+    month_range,
+    month_serial,
+    scope,
+    breakdowns,
+):
+    print(
+        "[gitreport3] "
+        f"Fetching default metrics: "
+        f"{scope} / "
+        f"{month_range['label']}"
+    )
+
+    # 通常指標・デフォルトアトリビューション
+    default_rows = fetch_meta_insights(
+        act_id=act_id,
+        token=token,
+        since=month_range["since"],
+        until=month_range["until"],
+        level="adset",
+        fields=[
+            "campaign_id",
+            "campaign_name",
+            "adset_id",
+            "adset_name",
+            "impressions",
+            "inline_link_clicks",
+            "spend",
+            "clicks",
+            "actions",
+            "action_values",
+        ],
+        breakdowns=breakdowns,
+        action_attribution_windows=[
+            "default",
+        ],
+    )
+
+    print(
+        "[gitreport3] "
+        f"Fetching attribution metrics: "
+        f"{scope} / "
+        f"{month_range['label']}"
+    )
+
+    # Incrementalityを含むアトリビューション別指標は
+    # 通常指標と分けて取得し、Python側で結合。
+    attr_rows = fetch_meta_insights(
+        act_id=act_id,
+        token=token,
+        since=month_range["since"],
+        until=month_range["until"],
+        level="adset",
+        fields=[
+            "campaign_id",
+            "campaign_name",
+            "adset_id",
+            "adset_name",
+            "actions",
+            "action_values",
+        ],
+        breakdowns=breakdowns,
+        action_attribution_windows=
+            ATTRIBUTION_WINDOWS,
+    )
+
+    merged = {}
+
+    for item in default_rows:
+        key = gitreport3_key(
+            item,
+            scope,
+        )
+
+        merged[key] = {
+            "item":
+                item,
+            "default":
+                extract_default_metrics(
+                    item
+                ),
+            "attr":
+                empty_attr_metrics(),
+        }
+
+    for item in attr_rows:
+        key = gitreport3_key(
+            item,
+            scope,
+        )
+
+        if key not in merged:
+            merged[key] = {
+                "item":
+                    item,
+                "default":
+                    empty_default_metrics(),
+                "attr":
+                    empty_attr_metrics(),
+            }
+
+        merged[key][
+            "attr"
+        ] = extract_attribution_metrics(
+            item
+        )
+
+    output = []
+
+    for data in merged.values():
+        item = data["item"]
+        default = data["default"]
+        attr = data["attr"]
+
+        output.append([
+            "meta",
+            scope,
+            month_serial,
+            "",  # blank day column
+            item.get(
+                "campaign_name",
+                "",
+            ),
+            item.get(
+                "adset_name",
+                "",
+            ),
+            "",  # blank column
+            item.get(
+                "gender",
+                "",
+            ),
+            item.get(
+                "age",
+                "",
+            ),
+            item.get(
+                "publisher_platform",
+                "",
+            ),
+            item.get(
+                "platform_position",
+                "",
+            ),
+            item.get(
+                "device_platform",
+                "",
+            ),
+            default[
+                "impressions"
+            ],
+            default[
+                "link_clicks"
+            ],
+            default[
+                "spend"
+            ],
+            default[
+                "purchase"
+            ],
+            default[
+                "sales"
+            ],
+            default[
+                "add_to_cart"
+            ],
+            default[
+                "clicks_all"
+            ],
+            default[
+                "post_reactions"
+            ],
+            default[
+                "post_comments"
+            ],
+            default[
+                "post_saves"
+            ],
+            default[
+                "post_shares"
+            ],
+            *attribution_metric_values(
+                attr
+            ),
+        ])
+
+    return output
+
+
+def gitreport3_key(
+    item,
+    scope,
+):
+    base = (
+        str(
+            item.get(
+                "campaign_id",
+                "",
+            )
+        ),
+        str(
+            item.get(
+                "adset_id",
+                "",
+            )
+        ),
+    )
+
+    if scope == "adset_gen_age":
+        return base + (
+            str(
+                item.get(
+                    "gender",
+                    "",
+                )
+            ),
+            str(
+                item.get(
+                    "age",
+                    "",
+                )
+            ),
+        )
+
+    return base + (
+        str(
+            item.get(
+                "publisher_platform",
+                "",
+            )
+        ),
+        str(
+            item.get(
+                "platform_position",
+                "",
+            )
+        ),
+        str(
+            item.get(
+                "device_platform",
+                "",
+            )
+        ),
+    )
+
+
+def empty_default_metrics():
+    return {
+        "impressions": 0,
+        "link_clicks": 0.0,
+        "spend": 0.0,
+        "purchase": 0.0,
+        "sales": 0.0,
+        "add_to_cart": 0.0,
+        "clicks_all": 0.0,
+        "post_reactions": 0.0,
+        "post_comments": 0.0,
+        "post_saves": 0.0,
+        "post_shares": 0.0,
+    }
+
+
+def sort_gitreport3(
+    rows,
+):
+    scope_order = {
+        "adset_gen_age": 0,
+        "adset_pm": 1,
     }
 
     return sorted(
@@ -929,167 +1901,34 @@ def sort_gitreport1(rows):
             r[7],
             r[8],
             r[9],
-            r[10],
-            r[11],
         ),
     )
 
 
 # =========================================================
-# gitreport2
+# gitreport4
+# campaign x audience_segment
+# past 2 months
+# impressions / spend x1.2 / cv
 # =========================================================
 
-def build_gitreport2_rows(
+def build_gitreport4_rows(
     act_id,
     token,
     month_ranges,
 ):
-    """
-    A month
-    B campaign_name
-    C reach
-
-    通常キャンペーン別reachに加え、
-    FILTER_CAMPAIGN_TOTAL_NAMESの4グループを
-    account level + campaign.name CONTAINで直接取得。
-
-    キャンペーン別reachを足し算しないため、
-    グループ内のユニークリーチ重複を避けられる。
-    """
     rows = []
 
     for month_range in month_ranges:
-        print(
-            f"[gitreport2] "
-            f"Fetching campaign reach: "
-            f"{month_range['label']}"
+        month_serial = (
+            to_sheets_date_serial(
+                month_range["since"]
+            )
         )
 
-        # ---------------------------------------------
-        # campaign別
-        # ---------------------------------------------
-        campaign_rows = fetch_meta_insights(
-            act_id=act_id,
-            token=token,
-            since=month_range["since"],
-            until=month_range["until"],
-            level="campaign",
-            fields=[
-                "campaign_name",
-                "reach",
-            ],
-        )
-
-        for item in campaign_rows:
-            rows.append([
-                to_sheets_date_serial(month_range["since"]),
-                item.get(
-                    "campaign_name",
-                    "",
-                ),
-                to_int(
-                    item.get("reach")
-                ),
-            ])
-
-        # ---------------------------------------------
-        # campaign group別 deduplicated reach
-        # ---------------------------------------------
-        for keyword, total_name in (
-            FILTER_CAMPAIGN_TOTAL_NAMES.items()
-        ):
-            print(
-                f"[gitreport2] "
-                f"Fetching total: "
-                f"{month_range['label']} / "
-                f"{keyword}"
-            )
-
-            total_rows = fetch_meta_insights(
-                act_id=act_id,
-                token=token,
-                since=month_range["since"],
-                until=month_range["until"],
-                level="account",
-                fields=[
-                    "reach",
-                ],
-                filtering=[
-                    {
-                        "field": "campaign.name",
-                        "operator": "CONTAIN",
-                        "value": keyword,
-                    }
-                ],
-            )
-
-            # 1ヶ月 time_range + account levelなので
-            # 通常は1行。安全のため複数行なら加算。
-            total_reach = sum(
-                to_int(
-                    item.get("reach")
-                )
-                for item in total_rows
-            )
-
-            rows.append([
-                to_sheets_date_serial(month_range["since"]),
-                total_name,
-                total_reach,
-            ])
-
-    return sorted(
-        rows,
-        key=lambda r: (
-            r[0],
-            r[1],
-        ),
-    )
-
-
-# =========================================================
-# gitreport3
-# =========================================================
-
-def build_gitreport3_rows(
-    act_id,
-    token,
-    month_ranges,
-):
-    """
-    Audience Segmentは既存auseと同じ取得方式。
-
-    breakdown候補:
-      user_segment_key
-      audience_segment
-      user_persona_name
-
-    実際に値が返る最初のbreakdownを採用。
-
-    想定値:
-      existing
-      prospecting
-      unknown
-
-    A month
-    B campaign_name
-    C audience_segment
-    D impressions
-    E spend × 1.2
-    F cv
-
-    cv:
-      offsite_conversion.fb_pixel_purchase の value
-
-    attribution:
-      ["default"]
-    """
-    rows = []
-
-    for month_range in month_ranges:
         print(
-            f"[gitreport3] "
-            f"Fetching audience segment: "
+            "[gitreport4] "
+            "Fetching audience segment: "
             f"{month_range['label']}"
         )
 
@@ -1125,7 +1964,7 @@ def build_gitreport3_rows(
 
             except RuntimeError as e:
                 print(
-                    f"[gitreport3] "
+                    "[gitreport4] "
                     f"breakdown='{breakdown}' "
                     f"API error: {e}"
                 )
@@ -1135,28 +1974,32 @@ def build_gitreport3_rows(
                 rows_try,
                 breakdown,
             ):
-                chosen_breakdown = breakdown
-                segment_rows = rows_try
+                chosen_breakdown = (
+                    breakdown
+                )
+                segment_rows = (
+                    rows_try
+                )
                 break
 
             print(
-                f"[gitreport3] "
+                "[gitreport4] "
                 f"breakdown='{breakdown}' "
-                f"returned no usable values"
+                "returned no usable values"
             )
 
         if not chosen_breakdown:
             raise RuntimeError(
-                "gitreport3 failed: none of the "
-                "Audience Segment breakdown candidates "
-                "returned usable data. "
+                "gitreport4 failed: none of "
+                "the Audience Segment breakdown "
+                "candidates returned usable data. "
                 f"month={month_range['label']}; "
-                f"candidates="
+                "candidates="
                 f"{AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES}"
             )
 
         print(
-            f"[gitreport3] "
+            "[gitreport4] "
             f"{month_range['label']} "
             f"using breakdown="
             f"'{chosen_breakdown}', "
@@ -1164,17 +2007,20 @@ def build_gitreport3_rows(
         )
 
         for item in segment_rows:
-            cv = extract_action_value(
+            # 既存auseと同じ:
+            # offsite_conversion.fb_pixel_purchase の value
+            cv = extract_candidate_value(
                 item.get(
                     "actions",
                     [],
                 ),
-                target_action=
-                    "offsite_conversion.fb_pixel_purchase",
+                [
+                    "offsite_conversion.fb_pixel_purchase"
+                ],
             )
 
             rows.append([
-                to_sheets_date_serial(month_range["since"]),
+                month_serial,
                 item.get(
                     "campaign_name",
                     "",
@@ -1190,9 +2036,11 @@ def build_gitreport3_rows(
                 ),
                 round(
                     to_float(
-                        item.get("spend")
+                        item.get(
+                            "spend"
+                        )
                     ) * 1.2,
-                    2,
+                    6,
                 ),
                 cv,
             ])
@@ -1229,38 +2077,6 @@ def has_real_breakdown(
     return False
 
 
-def extract_action_value(
-    action_list,
-    target_action,
-):
-    """
-    action_attribution_windows=["default"]時の
-    actions内 value を取得。
-    """
-    if not isinstance(
-        action_list,
-        list,
-    ):
-        return 0.0
-
-    for action in action_list:
-        if not isinstance(
-            action,
-            dict,
-        ):
-            continue
-
-        if (
-            action.get("action_type")
-            == target_action
-        ):
-            return to_float(
-                action.get("value")
-            )
-
-    return 0.0
-
-
 # =========================================================
 # Google Sheets
 # =========================================================
@@ -1290,8 +2106,10 @@ def connect_spreadsheets(
 
     for sheet_id in sheet_ids:
         try:
-            spreadsheet = client.open_by_key(
-                sheet_id
+            spreadsheet = (
+                client.open_by_key(
+                    sheet_id
+                )
             )
 
             spreadsheets.append(
@@ -1299,7 +2117,7 @@ def connect_spreadsheets(
             )
 
             print(
-                f"Google Sheets connected: "
+                "Google Sheets connected: "
                 f"{sheet_id}"
             )
 
@@ -1319,16 +2137,28 @@ def get_or_create_worksheet(
     cols,
 ):
     try:
-        return spreadsheet.worksheet(
-            sheet_name
+        worksheet = (
+            spreadsheet.worksheet(
+                sheet_name
+            )
         )
 
     except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(
-            title=sheet_name,
-            rows=1000,
-            cols=cols,
+        worksheet = (
+            spreadsheet.add_worksheet(
+                title=sheet_name,
+                rows=1000,
+                cols=cols,
+            )
         )
+
+    # 既存シートの列数が足りない場合は拡張。
+    if worksheet.col_count < cols:
+        worksheet.resize(
+            cols=cols
+        )
+
+    return worksheet
 
 
 def write_sheet(
@@ -1349,13 +2179,16 @@ def write_sheet(
         header
     ] + rows
 
+    # 日付はシリアル値として数値で出力。
+    # 表示形式はスプレッドシート側の既存設定に任せる。
     worksheet.update(
         "A1",
         output,
+        raw=True,
     )
 
     print(
-        f"Write success: "
+        "Write success: "
         f"spreadsheet={spreadsheet.id}, "
         f"sheet={sheet_name}, "
         f"rows={len(rows)}"
@@ -1367,18 +2200,9 @@ def write_gitreport1(
     rows,
 ):
     header = [
-        "media",
-        "scope",
         "month",
-        "day",
         "campaign_name",
-        "adset_name",
-        "ad_name",
-        "gender",
-        "age",
-        "platform",
-        "placement",
-        "device_platform",
+        "reach",
         "cv_view_1d",
         "cv_click_7d",
         "cv_view1d_click7d",
@@ -1402,9 +2226,24 @@ def write_gitreport2(
     rows,
 ):
     header = [
+        "media",
+        "scope",
         "month",
+        "day",
         "campaign_name",
-        "reach",
+        "adset_name",
+        "ad_name",
+        "gender",
+        "age",
+        "platform",
+        "cv_view_1d",
+        "cv_click_7d",
+        "cv_view1d_click7d",
+        "cv_incr",
+        "sale_view_1d",
+        "sales_click_7d",
+        "sales_view1d_click7d",
+        "sales_incr",
     ]
 
     write_sheet(
@@ -1420,12 +2259,37 @@ def write_gitreport3(
     rows,
 ):
     header = [
+        "media",
+        "scope",
         "month",
+        "",
         "campaign_name",
-        "audience_segment",
+        "adset_name",
+        "",
+        "gender",
+        "age",
+        "platform",
+        "placement",
+        "device_platform",
         "impressions",
+        "link_clicks",
         "spend",
-        "cv",
+        "purchase",
+        "sales",
+        "add_to_cart",
+        "clicks_all",
+        "post_reactions",
+        "post_comments",
+        "post_saves",
+        "post_shares",
+        "cv_view_1d",
+        "cv_click_7d",
+        "cv_view1d_click7d",
+        "cv_incr",
+        "sale_view_1d",
+        "sales_click_7d",
+        "sales_view1d_click7d",
+        "sales_incr",
     ]
 
     write_sheet(
@@ -1436,13 +2300,38 @@ def write_gitreport3(
     )
 
 
+def write_gitreport4(
+    spreadsheet,
+    rows,
+):
+    header = [
+        "month",
+        "campaign_name",
+        "audience_segment",
+        "impressions",
+        "spend",
+        "cv",
+    ]
+
+    write_sheet(
+        spreadsheet,
+        SHEET_GITREPORT4,
+        header,
+        rows,
+    )
+
+
 # =========================================================
 # Utils
 # =========================================================
 
-def to_float(value):
+def to_float(
+    value,
+):
     try:
-        return float(value)
+        return float(
+            value
+        )
     except (
         TypeError,
         ValueError,
@@ -1450,10 +2339,14 @@ def to_float(value):
         return 0.0
 
 
-def to_int(value):
+def to_int(
+    value,
+):
     try:
         return int(
-            float(value)
+            float(
+                value
+            )
         )
     except (
         TypeError,
@@ -1464,9 +2357,11 @@ def to_int(value):
 
 def truncate_text(
     value,
-    limit=1200,
+    limit=1400,
 ):
-    value = str(value)
+    value = str(
+        value
+    )
 
     if len(value) <= limit:
         return value
