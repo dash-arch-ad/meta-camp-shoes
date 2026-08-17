@@ -82,6 +82,7 @@ POST_COMMENT_CANDIDATES = [
 ]
 
 POST_SAVE_CANDIDATES = [
+    "onsite_conversion.post_save",
     "post_save",
 ]
 
