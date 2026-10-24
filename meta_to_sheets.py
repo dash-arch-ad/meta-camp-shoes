@@ -1930,8 +1930,8 @@ def write_sheet(
     # 日付はシリアル値として数値で出力。
     # 表示形式はスプレッドシート側の既存設定に任せる。
     worksheet.update(
-        "A1",
-        output,
+        range_name="A1",
+        values=output,
         raw=True,
     )
 
