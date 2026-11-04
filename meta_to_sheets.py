@@ -17,6 +17,7 @@ JST = ZoneInfo("Asia/Tokyo")
 SHEET_MON_DAY = "mon_day"
 SHEET_AD = "ad"
 SHEET_AUDIENCE = "audience"
+SHEET_AUDIENCE_DETAIL = "audience(detail)"
 SHEET_SEGMENTS = "segments"
 
 GITREPORT1_MONTHS = 13
@@ -117,6 +118,7 @@ def main():
     print("mon_day daily ranges:", format_ranges(ranges_3m))
     print("ad ranges:", format_ranges(ranges_3m))
     print("audience ranges:", format_ranges(ranges_3m))
+    print("audience(detail) ranges:", format_ranges(ranges_3m))
     print("segments ranges:", format_ranges(ranges_3m))
 
     spreadsheets = connect_spreadsheets(
@@ -157,6 +159,17 @@ def main():
             month_ranges=ranges_3m,
         ),
         lambda rows: write_all(spreadsheets, write_audience, rows),
+        failures,
+    )
+
+    run_export(
+        "audience(detail)",
+        lambda: build_audience_detail_rows(
+            act_id=act_id,
+            token=token,
+            month_ranges=ranges_3m,
+        ),
+        lambda rows: write_all(spreadsheets, write_audience_detail, rows),
         failures,
     )
 
@@ -1252,406 +1265,186 @@ def add_attr_metrics(
 # attribution CV / sales
 # =========================================================
 
-def build_ad_rows(
-    act_id,
-    token,
-    month_ranges,
-):
+def build_ad_rows(act_id, token, month_ranges):
     rows = []
-
+    scopes = [
+        ("campaign", "campaign", ["campaign_name"]),
+        ("adset", "adset", ["campaign_name", "adset_name"]),
+        ("ad", "ad", ["campaign_name", "adset_name", "ad_name"]),
+    ]
     for month_range in month_ranges:
         month_serial = to_sheets_date_serial(month_range["since"])
-
-        print(
-            "[ad] Fetching ad: "
-            f"{month_range['label']}"
-        )
-
-        batch = fetch_meta_insights(
-            act_id=act_id,
-            token=token,
-            since=month_range["since"],
-            until=month_range["until"],
-            level="ad",
-            fields=[
-                "campaign_name",
-                "adset_name",
-                "ad_name",
-                "actions",
-                "action_values",
-            ],
-            action_attribution_windows=ATTRIBUTION_WINDOWS,
-        )
-
-        for item in batch:
-            attr = extract_attribution_metrics(item)
-            rows.append([
-                "ad",
-                month_serial,
-                item.get("campaign_name", ""),
-                item.get("adset_name", ""),
-                item.get("ad_name", ""),
-                *attribution_metric_values(attr),
-            ])
-
-    return sorted(
-        rows,
-        key=lambda r: (r[1], r[2], r[3], r[4]),
-    )
+        for scope, level, dimensions in scopes:
+            print(f"[ad] Fetching {scope}: {month_range['label']}")
+            batch = fetch_meta_insights(
+                act_id=act_id, token=token,
+                since=month_range["since"], until=month_range["until"],
+                level=level,
+                fields=dimensions + ["actions", "action_values"],
+                action_attribution_windows=ATTRIBUTION_WINDOWS,
+            )
+            for item in batch:
+                rows.append([
+                    scope, month_serial,
+                    item.get("campaign_name", ""),
+                    item.get("adset_name", "") if scope != "campaign" else "",
+                    item.get("ad_name", "") if scope == "ad" else "",
+                    *attribution_metric_values(extract_attribution_metrics(item)),
+                ])
+    order = {"campaign": 0, "adset": 1, "ad": 2}
+    return sorted(rows, key=lambda r: (r[1], order[r[0]], r[2], r[3], r[4]))
 
 
 # =========================================================
-# audience
-# adset_gen_age / adset_pm
-# past 3 months
+# audience: campaign breakdowns / attribution metrics
 # =========================================================
 
-# adset_gen_age / adset_pm
-# past 2 months
-# normal metrics + default CV + attribution CV/sales
-# =========================================================
+GENDER_NAMES = {"male": "男性", "female": "女性", "unknown": "不明"}
+PLATFORM_NAMES = {
+    "instagram": "Instagram", "facebook": "Facebook",
+    "audience_network": "Audience Network", "threads": "Threads",
+    "messenger": "Messenger", "uncategorized": "Uncategorized",
+}
 
-def build_audience_rows(
-    act_id,
-    token,
-    month_ranges,
-):
+def normalize_gender(value):
+    return GENDER_NAMES.get(str(value).lower(), value or "")
+
+
+def normalize_platform(value):
+    return PLATFORM_NAMES.get(str(value).lower(), value or "")
+
+
+def build_audience_rows(act_id, token, month_ranges):
     rows = []
-
+    scopes = [
+        ("campaign_gen", "gender"),
+        ("campaign_age", "age"),
+        ("campaign_pf", "publisher_platform"),
+    ]
     for month_range in month_ranges:
-        month_serial = (
-            to_sheets_date_serial(
-                month_range["since"]
+        serial = to_sheets_date_serial(month_range["since"])
+        for scope, breakdown in scopes:
+            print(f"[audience] Fetching {scope}: {month_range['label']}")
+            batch = fetch_meta_insights(
+                act_id=act_id, token=token,
+                since=month_range["since"], until=month_range["until"],
+                level="campaign", fields=["campaign_name", "actions", "action_values"],
+                breakdowns=[breakdown],
+                action_attribution_windows=ATTRIBUTION_WINDOWS,
             )
-        )
+            for item in batch:
+                audience = item.get(breakdown, "")
+                if breakdown == "gender":
+                    audience = normalize_gender(audience)
+                elif breakdown == "publisher_platform":
+                    audience = normalize_platform(audience)
+                rows.append([
+                    scope, serial, item.get("campaign_name", ""), audience,
+                    *attribution_metric_values(extract_attribution_metrics(item)),
+                ])
+    order = {name: i for i, (name, _) in enumerate(scopes)}
+    return sorted(rows, key=lambda r: (r[1], order[r[0]], r[2], str(r[3])))
 
-        # ---------------------------------------------
-        # adset_gen_age
-        # ---------------------------------------------
-        rows.extend(
-            build_audience_scope(
-                act_id=act_id,
-                token=token,
-                month_range=month_range,
-                month_serial=month_serial,
-                scope="adset_gen_age",
-                breakdowns=[
-                    "gender",
-                    "age",
-                ],
-            )
-        )
 
-        # ---------------------------------------------
-        # adset_pm
-        # ---------------------------------------------
-        rows.extend(
-            build_audience_scope(
-                act_id=act_id,
-                token=token,
-                month_range=month_range,
-                month_serial=month_serial,
-                scope="adset_pm",
-                breakdowns=[
-                    "publisher_platform",
-                    "platform_position",
-                    "device_platform",
-                ],
-            )
-        )
+def build_audience_detail_rows(act_id, token, month_ranges):
+    rows = []
+    scopes = [
+        ("adset_pf", "adset", ["publisher_platform"]),
+        ("adset_gen_age", "adset", ["gender", "age"]),
+        ("campaign_pm", "campaign", [
+            "publisher_platform", "platform_position", "device_platform"
+        ]),
+    ]
+    for month_range in month_ranges:
+        serial = to_sheets_date_serial(month_range["since"])
+        for scope, level, breakdowns in scopes:
+            rows.extend(build_audience_detail_scope(
+                act_id, token, month_range, serial, scope, level, breakdowns
+            ))
+    order = {name: i for i, (name, _, _) in enumerate(scopes)}
+    return sorted(rows, key=lambda r: (r[1], order[r[0]], *map(str, r[2:9])))
 
-    return sort_audience(
-        rows
+
+def build_audience_detail_scope(act_id, token, month_range, serial,
+                                scope, level, breakdowns):
+    # Fetch separately: default metrics and custom attribution windows.
+    # Merge by stable IDs and raw breakdown values, not translated labels.
+    identity_fields = ["campaign_id", "campaign_name"]
+    if level == "adset":
+        identity_fields += ["adset_id", "adset_name"]
+    shared = dict(
+        act_id=act_id, token=token,
+        since=month_range["since"], until=month_range["until"],
+        level=level, breakdowns=breakdowns,
     )
-
-
-def build_audience_scope(
-    act_id,
-    token,
-    month_range,
-    month_serial,
-    scope,
-    breakdowns,
-):
-    print(
-        "[audience] "
-        f"Fetching default metrics: "
-        f"{scope} / "
-        f"{month_range['label']}"
-    )
-
-    # 通常指標・デフォルトアトリビューション
+    print(f"[audience(detail)] Fetching default: {scope} / {month_range['label']}")
     default_rows = fetch_meta_insights(
-        act_id=act_id,
-        token=token,
-        since=month_range["since"],
-        until=month_range["until"],
-        level="adset",
-        fields=[
-            "campaign_id",
-            "campaign_name",
-            "adset_id",
-            "adset_name",
-            "impressions",
-            "inline_link_clicks",
-            "spend",
-            "clicks",
-            "actions",
-            "action_values",
+        **shared,
+        fields=identity_fields + [
+            "impressions", "inline_link_clicks", "spend", "clicks",
+            "actions", "action_values"
         ],
-        breakdowns=breakdowns,
-        action_attribution_windows=[
-            "default",
-        ],
+        action_attribution_windows=["default"],
     )
-
-    print(
-        "[audience] "
-        f"Fetching attribution metrics: "
-        f"{scope} / "
-        f"{month_range['label']}"
-    )
-
-    # Incrementalityを含むアトリビューション別指標は
-    # 通常指標と分けて取得し、Python側で結合。
+    print(f"[audience(detail)] Fetching attribution: {scope} / {month_range['label']}")
     attr_rows = fetch_meta_insights(
-        act_id=act_id,
-        token=token,
-        since=month_range["since"],
-        until=month_range["until"],
-        level="adset",
-        fields=[
-            "campaign_id",
-            "campaign_name",
-            "adset_id",
-            "adset_name",
-            "actions",
-            "action_values",
-        ],
-        breakdowns=breakdowns,
-        action_attribution_windows=
-            ATTRIBUTION_WINDOWS,
+        **shared,
+        fields=identity_fields + ["actions", "action_values"],
+        action_attribution_windows=ATTRIBUTION_WINDOWS,
     )
+
+    def key_for(item):
+        return (
+            str(item.get("campaign_id", "")),
+            str(item.get("adset_id", "")) if level == "adset" else "",
+            *(str(item.get(field, "")) for field in breakdowns),
+        )
 
     merged = {}
-
     for item in default_rows:
-        key = audience_key(
-            item,
-            scope,
-        )
-
-        merged[key] = {
-            "item":
-                item,
-            "default":
-                extract_default_metrics(
-                    item
-                ),
-            "attr":
-                empty_attr_metrics(),
+        merged[key_for(item)] = {
+            "item": item,
+            "default": extract_default_metrics(item),
+            "attr": empty_attr_metrics(),
         }
-
     for item in attr_rows:
-        key = audience_key(
-            item,
-            scope,
-        )
-
+        key = key_for(item)
         if key not in merged:
             merged[key] = {
-                "item":
-                    item,
-                "default":
-                    empty_default_metrics(),
-                "attr":
-                    empty_attr_metrics(),
+                "item": item,
+                "default": empty_default_metrics(),
+                "attr": empty_attr_metrics(),
             }
+        merged[key]["attr"] = extract_attribution_metrics(item)
 
-        merged[key][
-            "attr"
-        ] = extract_attribution_metrics(
-            item
-        )
-
-    output = []
-
-    for data in merged.values():
-        item = data["item"]
-        default = data["default"]
-        attr = data["attr"]
-
-        output.append([
-            scope,
-            month_serial,
-            item.get(
-                "campaign_name",
-                "",
-            ),
-            item.get(
-                "adset_name",
-                "",
-            ),
-            item.get(
-                "gender",
-                "",
-            ),
-            item.get(
-                "age",
-                "",
-            ),
-            item.get(
-                "publisher_platform",
-                "",
-            ),
-            item.get(
-                "platform_position",
-                "",
-            ),
-            item.get(
-                "device_platform",
-                "",
-            ),
-            default[
-                "impressions"
-            ],
-            default[
-                "link_clicks"
-            ],
-            default[
-                "spend"
-            ],
-            default[
-                "purchase"
-            ],
-            default[
-                "sales"
-            ],
-            default[
-                "lead"
-            ],
-            default[
-                "add_to_cart"
-            ],
-            default[
-                "clicks_all"
-            ],
-            default[
-                "post_reactions"
-            ],
-            default[
-                "post_comments"
-            ],
-            default[
-                "post_saves"
-            ],
-            default[
-                "post_shares"
-            ],
-            *attribution_metric_values(
-                attr
-            ),
+    result = []
+    for entry in merged.values():
+        item, default, attr = entry["item"], entry["default"], entry["attr"]
+        result.append([
+            scope, serial,
+            item.get("campaign_name", ""),
+            item.get("adset_name", "") if level == "adset" else "",
+            normalize_gender(item.get("gender", "")),
+            item.get("age", ""),
+            normalize_platform(item.get("publisher_platform", "")),
+            item.get("platform_position", ""),
+            item.get("device_platform", ""),
+            *[default[name] for name in DEFAULT_METRIC_NAMES],
+            *attribution_metric_values(attr),
         ])
+    return result
 
-    return output
 
-
-def audience_key(
-    item,
-    scope,
-):
-    base = (
-        str(
-            item.get(
-                "campaign_id",
-                "",
-            )
-        ),
-        str(
-            item.get(
-                "adset_id",
-                "",
-            )
-        ),
-    )
-
-    if scope == "adset_gen_age":
-        return base + (
-            str(
-                item.get(
-                    "gender",
-                    "",
-                )
-            ),
-            str(
-                item.get(
-                    "age",
-                    "",
-                )
-            ),
-        )
-
-    return base + (
-        str(
-            item.get(
-                "publisher_platform",
-                "",
-            )
-        ),
-        str(
-            item.get(
-                "platform_position",
-                "",
-            )
-        ),
-        str(
-            item.get(
-                "device_platform",
-                "",
-            )
-        ),
-    )
+DEFAULT_METRIC_NAMES = [
+    "impressions", "link_clicks", "spend", "purchase", "sales", "lead",
+    "add_to_cart", "clicks_all", "post_reactions", "post_comments",
+    "post_saves", "post_shares",
+]
 
 
 def empty_default_metrics():
-    return {
-        "impressions": 0,
-        "link_clicks": 0.0,
-        "spend": 0.0,
-        "purchase": 0.0,
-        "sales": 0.0,
-        "lead": 0.0,
-        "add_to_cart": 0.0,
-        "clicks_all": 0.0,
-        "post_reactions": 0.0,
-        "post_comments": 0.0,
-        "post_saves": 0.0,
-        "post_shares": 0.0,
-    }
+    return {name: 0 for name in DEFAULT_METRIC_NAMES}
 
-
-def sort_audience(
-    rows,
-):
-    scope_order = {
-        "adset_gen_age": 0,
-        "adset_pm": 1,
-    }
-
-    return sorted(
-        rows,
-        key=lambda r: (
-            r[1],  # month
-            scope_order.get(r[0], 99),
-            r[2],  # campaign_name
-            r[3],  # adset_name
-            r[4],  # gender
-            r[5],  # age
-            r[6],  # platform
-            r[7],  # placement
-            r[8],  # device_platform
-        ),
-    )
 
 # =========================================================
 # segments
@@ -1986,42 +1779,23 @@ def write_ad(
     write_sheet(spreadsheet, SHEET_AD, header, rows)
 
 
-def write_audience(
-    spreadsheet,
-    rows,
-):
-    header = [
-        "scope",
-        "month",
-        "campaign_name",
-        "adset_name",
-        "gender",
-        "age",
-        "platform",
-        "placement",
-        "device_platform",
-        "impressions",
-        "link_clicks",
-        "spend",
-        "purchase",
-        "sales",
-        "lead",
-        "add_to_cart",
-        "clicks_all",
-        "post_reactions",
-        "post_comments",
-        "post_saves",
-        "post_shares",
-        "cv_view_1d",
-        "cv_click_7d",
-        "cv_view1d_click7d",
-        "cv_incr",
-        "sale_view_1d",
-        "sales_click_7d",
-        "sales_view1d_click7d",
-        "sales_incr",
-    ]
+ATTRIBUTION_HEADERS = [
+    "cv_view_1d", "cv_click_7d", "cv_view1d_click7d", "cv_incr",
+    "sale_view_1d", "sales_click_7d", "sales_view1d_click7d", "sales_incr",
+]
+
+
+def write_audience(spreadsheet, rows):
+    header = ["scope", "month", "campaign_name", "audience"] + ATTRIBUTION_HEADERS
     write_sheet(spreadsheet, SHEET_AUDIENCE, header, rows)
+
+
+def write_audience_detail(spreadsheet, rows):
+    header = [
+        "scope", "month", "campaign_name", "adset_name", "gender", "age",
+        "platform", "placement", "device_platform",
+    ] + DEFAULT_METRIC_NAMES + ATTRIBUTION_HEADERS
+    write_sheet(spreadsheet, SHEET_AUDIENCE_DETAIL, header, rows)
 
 
 def write_segments(
