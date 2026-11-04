@@ -17,7 +17,7 @@ JST = ZoneInfo("Asia/Tokyo")
 SHEET_MON_DAY = "mon_day"
 SHEET_AD = "ad"
 SHEET_AUDIENCE = "audience"
-SHEET_AUDIENCE_DETAIL = "audience(detail)"
+SHEET_AUDIENCE_DETAIL = "audience_detail"
 SHEET_SEGMENTS = "segments"
 
 GITREPORT1_MONTHS = 13
@@ -118,7 +118,7 @@ def main():
     print("mon_day daily ranges:", format_ranges(ranges_3m))
     print("ad ranges:", format_ranges(ranges_3m))
     print("audience ranges:", format_ranges(ranges_3m))
-    print("audience(detail) ranges:", format_ranges(ranges_3m))
+    print("audience_detail ranges:", format_ranges(ranges_3m))
     print("segments ranges:", format_ranges(ranges_3m))
 
     spreadsheets = connect_spreadsheets(
@@ -163,7 +163,7 @@ def main():
     )
 
     run_export(
-        "audience(detail)",
+        "audience_detail",
         lambda: build_audience_detail_rows(
             act_id=act_id,
             token=token,
@@ -1377,7 +1377,7 @@ def build_audience_detail_scope(act_id, token, month_range, serial,
         since=month_range["since"], until=month_range["until"],
         level=level, breakdowns=breakdowns,
     )
-    print(f"[audience(detail)] Fetching default: {scope} / {month_range['label']}")
+    print(f"[audience_detail] Fetching default: {scope} / {month_range['label']}")
     default_rows = fetch_meta_insights(
         **shared,
         fields=identity_fields + [
@@ -1386,7 +1386,7 @@ def build_audience_detail_scope(act_id, token, month_range, serial,
         ],
         action_attribution_windows=["default"],
     )
-    print(f"[audience(detail)] Fetching attribution: {scope} / {month_range['label']}")
+    print(f"[audience_detail] Fetching attribution: {scope} / {month_range['label']}")
     attr_rows = fetch_meta_insights(
         **shared,
         fields=identity_fields + ["actions", "action_values"],
