@@ -1160,6 +1160,7 @@ def build_mon_day_rows(
             until=month_range["until"],
             level="campaign",
             fields=[
+                "campaign_id",
                 "campaign_name",
                 "reach",
                 "actions",
@@ -1246,6 +1247,7 @@ def build_mon_day_rows(
                 until=target_day,
                 level="campaign",
                 fields=[
+                    "campaign_id",
                     "campaign_name",
                     "actions",
                     "action_values",
