@@ -53,14 +53,10 @@ AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES = [
 # 同じ購入が複数action_typeで返るケースがあるため、
 # 合算せず、上から最初に存在するものだけ採用する。
 PURCHASE_COUNT_CANDIDATES = [
-    "omni_purchase",
     "offsite_conversion.fb_pixel_purchase",
-    "purchase",
 ]
 
 PURCHASE_VALUE_CANDIDATES = [
-    "omni_purchase",
-    "purchase",
     "offsite_conversion.fb_pixel_purchase",
 ]
 
@@ -118,7 +114,7 @@ def main():
     print("mon_day daily ranges:", format_ranges(ranges_3m))
     print("ad ranges:", format_ranges(ranges_3m))
     print("audience ranges:", format_ranges(ranges_3m))
-    print("audience_detail ranges:", format_ranges(ranges_3m))
+    print("audience(detail) ranges:", format_ranges(ranges_3m))
     print("segments ranges:", format_ranges(ranges_3m))
 
     spreadsheets = connect_spreadsheets(
@@ -163,7 +159,7 @@ def main():
     )
 
     run_export(
-        "audience_detail",
+        "audience(detail)",
         lambda: build_audience_detail_rows(
             act_id=act_id,
             token=token,
@@ -1106,6 +1102,40 @@ def extract_default_metrics(
 # reach + attribution CV / sales
 # =========================================================
 
+def purchase_sales(item):
+    """Same default-attribution purchase/sales as audience_detail."""
+    metrics = extract_default_metrics(item)
+    return [metrics["purchase"], metrics["sales"]]
+
+
+def fetch_purchase_sales_lookup(act_id, token, since, until, level,
+                                breakdowns=None, filtering=None):
+    """Separate default-window query; never replace attribution-window data."""
+    id_fields = {"campaign": ["campaign_id"],
+                 "adset": ["campaign_id", "adset_id"],
+                 "ad": ["campaign_id", "adset_id", "ad_id"],
+                 "account": []}[level]
+    batch = fetch_meta_insights(
+        act_id=act_id, token=token, since=since, until=until,
+        level=level, fields=id_fields + ["actions", "action_values"],
+        breakdowns=breakdowns, filtering=filtering,
+        action_attribution_windows=["default"],
+    )
+    return {
+        tuple(str(item.get(field, "")) for field in id_fields + (breakdowns or [])):
+            purchase_sales(item)
+        for item in batch
+    }
+
+
+def lookup_purchase_sales(lookup, item, level, breakdowns=None):
+    fields = {"campaign": ["campaign_id"],
+              "adset": ["campaign_id", "adset_id"],
+              "ad": ["campaign_id", "adset_id", "ad_id"],
+              "account": []}[level] + (breakdowns or [])
+    return lookup.get(tuple(str(item.get(field, "")) for field in fields), [0.0, 0.0])
+
+
 def build_mon_day_rows(
     act_id,
     token,
@@ -1138,6 +1168,9 @@ def build_mon_day_rows(
             action_attribution_windows=ATTRIBUTION_WINDOWS,
         )
 
+        purchase_lookup = fetch_purchase_sales_lookup(
+            act_id, token, month_range["since"], month_range["until"], "campaign"
+        )
         for item in campaign_rows:
             attr = extract_attribution_metrics(item)
             rows.append([
@@ -1145,6 +1178,7 @@ def build_mon_day_rows(
                 date_serial,
                 item.get("campaign_name", ""),
                 to_int(item.get("reach")),
+                *lookup_purchase_sales(purchase_lookup, item, "campaign"),
                 *attribution_metric_values(attr),
             ])
 
@@ -1170,6 +1204,12 @@ def build_mon_day_rows(
                 action_attribution_windows=ATTRIBUTION_WINDOWS,
             )
 
+            group_purchase_lookup = fetch_purchase_sales_lookup(
+                act_id, token, month_range["since"], month_range["until"],
+                "account", filtering=[{
+                    "field": "campaign.name", "operator": "CONTAIN", "value": keyword
+                }],
+            )
             reach = 0
             summed = empty_attr_metrics()
             for item in total_rows:
@@ -1184,6 +1224,7 @@ def build_mon_day_rows(
                 date_serial,
                 total_name,
                 reach,
+                *group_purchase_lookup.get((), [0.0, 0.0]),
                 *attribution_metric_values(summed),
             ])
 
@@ -1212,6 +1253,9 @@ def build_mon_day_rows(
                 action_attribution_windows=ATTRIBUTION_WINDOWS,
             )
 
+            purchase_lookup = fetch_purchase_sales_lookup(
+                act_id, token, target_day, target_day, "campaign"
+            )
             for item in batch:
                 attr = extract_attribution_metrics(item)
                 rows.append([
@@ -1219,6 +1263,7 @@ def build_mon_day_rows(
                     to_sheets_date_serial(target_day),
                     item.get("campaign_name", ""),
                     "",
+                    *lookup_purchase_sales(purchase_lookup, item, "campaign"),
                     *attribution_metric_values(attr),
                 ])
 
@@ -1280,8 +1325,14 @@ def build_ad_rows(act_id, token, month_ranges):
                 act_id=act_id, token=token,
                 since=month_range["since"], until=month_range["until"],
                 level=level,
-                fields=dimensions + ["actions", "action_values"],
+                fields=(["campaign_id"] +
+                        (["adset_id"] if level in ("adset", "ad") else []) +
+                        (["ad_id"] if level == "ad" else []) +
+                        dimensions + ["actions", "action_values"]),
                 action_attribution_windows=ATTRIBUTION_WINDOWS,
+            )
+            purchase_lookup = fetch_purchase_sales_lookup(
+                act_id, token, month_range["since"], month_range["until"], level
             )
             for item in batch:
                 rows.append([
@@ -1289,6 +1340,7 @@ def build_ad_rows(act_id, token, month_ranges):
                     item.get("campaign_name", ""),
                     item.get("adset_name", "") if scope != "campaign" else "",
                     item.get("ad_name", "") if scope == "ad" else "",
+                    *lookup_purchase_sales(purchase_lookup, item, level),
                     *attribution_metric_values(extract_attribution_metrics(item)),
                 ])
     order = {"campaign": 0, "adset": 1, "ad": 2}
@@ -1307,7 +1359,11 @@ PLATFORM_NAMES = {
 }
 
 def normalize_gender(value):
-    return GENDER_NAMES.get(str(value).lower(), value or "")
+    """Normalize Meta gender breakdown values for both audience sheets."""
+    if value is None:
+        return ""
+    normalized = str(value).strip().lower()
+    return GENDER_NAMES.get(normalized, str(value).strip())
 
 
 def normalize_platform(value):
@@ -1328,9 +1384,13 @@ def build_audience_rows(act_id, token, month_ranges):
             batch = fetch_meta_insights(
                 act_id=act_id, token=token,
                 since=month_range["since"], until=month_range["until"],
-                level="campaign", fields=["campaign_name", "actions", "action_values"],
+                level="campaign", fields=["campaign_id", "campaign_name", "actions", "action_values"],
                 breakdowns=[breakdown],
                 action_attribution_windows=ATTRIBUTION_WINDOWS,
+            )
+            purchase_lookup = fetch_purchase_sales_lookup(
+                act_id, token, month_range["since"], month_range["until"],
+                "campaign", breakdowns=[breakdown]
             )
             for item in batch:
                 audience = item.get(breakdown, "")
@@ -1340,6 +1400,7 @@ def build_audience_rows(act_id, token, month_ranges):
                     audience = normalize_platform(audience)
                 rows.append([
                     scope, serial, item.get("campaign_name", ""), audience,
+                    *lookup_purchase_sales(purchase_lookup, item, "campaign", [breakdown]),
                     *attribution_metric_values(extract_attribution_metrics(item)),
                 ])
     order = {name: i for i, (name, _) in enumerate(scopes)}
@@ -1377,7 +1438,7 @@ def build_audience_detail_scope(act_id, token, month_range, serial,
         since=month_range["since"], until=month_range["until"],
         level=level, breakdowns=breakdowns,
     )
-    print(f"[audience_detail] Fetching default: {scope} / {month_range['label']}")
+    print(f"[audience(detail)] Fetching default: {scope} / {month_range['label']}")
     default_rows = fetch_meta_insights(
         **shared,
         fields=identity_fields + [
@@ -1386,7 +1447,7 @@ def build_audience_detail_scope(act_id, token, month_range, serial,
         ],
         action_attribution_windows=["default"],
     )
-    print(f"[audience_detail] Fetching attribution: {scope} / {month_range['label']}")
+    print(f"[audience(detail)] Fetching attribution: {scope} / {month_range['label']}")
     attr_rows = fetch_meta_insights(
         **shared,
         fields=identity_fields + ["actions", "action_values"],
@@ -1745,6 +1806,8 @@ def write_mon_day(
         "date",
         "campaign_name",
         "reach",
+        "purchase",
+        "sales",
         "cv_view_1d",
         "cv_click_7d",
         "cv_view1d_click7d",
@@ -1767,6 +1830,8 @@ def write_ad(
         "campaign_name",
         "adset_name",
         "ad_name",
+        "purchase",
+        "sales",
         "cv_view_1d",
         "cv_click_7d",
         "cv_view1d_click7d",
@@ -1786,7 +1851,7 @@ ATTRIBUTION_HEADERS = [
 
 
 def write_audience(spreadsheet, rows):
-    header = ["scope", "month", "campaign_name", "audience"] + ATTRIBUTION_HEADERS
+    header = ["scope", "month", "campaign_name", "audience", "purchase", "sales"] + ATTRIBUTION_HEADERS
     write_sheet(spreadsheet, SHEET_AUDIENCE, header, rows)
 
 
