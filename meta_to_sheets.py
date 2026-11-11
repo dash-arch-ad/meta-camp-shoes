@@ -41,7 +41,7 @@ FILTER_CAMPAIGN_TOTAL_NAMES = {
     "Camper(CORE)": "Camper(CORE)_合計",
     "Camper(SP)": "Camper(SP)_合計",
     "Camper(CORE-L)": "Camper(CORE-L)_合計",
-    "CV最適化": "CV最適化_合計",
+    "ASC_CV最適化": "CV最適化_合計",
 }
 
 AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES = [
