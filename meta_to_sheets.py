@@ -1046,6 +1046,11 @@ def extract_default_metrics(
                 ) * 1.2,
                 6,
             ),
+        "content_view":
+            extract_candidate_value(
+                actions,
+                ["offsite_conversion.fb_pixel_view_content"],
+            ),        
         "purchase":
             extract_candidate_value(
                 actions,
@@ -1499,7 +1504,7 @@ def build_audience_detail_scope(act_id, token, month_range, serial,
 
 
 DEFAULT_METRIC_NAMES = [
-    "impressions", "link_clicks", "spend", "purchase", "sales", "lead",
+    "impressions", "link_clicks", "spend", "content_view", "purchase", "sales", "lead",
     "add_to_cart", "clicks_all", "post_reactions", "post_comments",
     "post_saves", "post_shares",
 ]
