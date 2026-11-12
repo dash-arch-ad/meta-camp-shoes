@@ -41,7 +41,7 @@ FILTER_CAMPAIGN_TOTAL_NAMES = {
     "Camper(CORE)": "Camper(CORE)_合計",
     "Camper(SP)": "Camper(SP)_合計",
     "Camper(CORE-L)": "Camper(CORE-L)_合計",
-    "ASC_CV最適化": "CV最適化_合計",
+    "CV最適化": "CV最適化_合計",
 }
 
 AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES = [
@@ -696,6 +696,7 @@ def fetch_meta_insights(
     breakdowns=None,
     action_attribution_windows=None,
     filtering=None,
+    time_increment=None,
 ):
     url = (
         "https://graph.facebook.com/"
@@ -724,6 +725,9 @@ def fetch_meta_insights(
         "limit":
             5000,
     }
+
+    if time_increment is not None:
+        params["time_increment"] = time_increment
 
     if breakdowns:
         params[
@@ -764,6 +768,7 @@ def fetch_meta_insights(
             action_attribution_windows or [],
         "filtering":
             filtering or [],
+        "time_increment": time_increment,
         "fields":
             fields,
     }
@@ -1050,7 +1055,7 @@ def extract_default_metrics(
             extract_candidate_value(
                 actions,
                 ["offsite_conversion.fb_pixel_view_content"],
-            ),        
+            ),
         "purchase":
             extract_candidate_value(
                 actions,
@@ -1274,7 +1279,10 @@ def build_mon_day_rows(
                     *attribution_metric_values(attr),
                 ])
 
-    scope_order = {"campaign_month": 0, "campaign_day": 1}
+    # Leadads: one row per campaign for its active period (within 14 months).
+    rows.extend(build_campaign_period_rows(act_id, token, daily_ranges))
+
+    scope_order = {"campaign_month": 0, "campaign_day": 1, "campaign_period": 2}
     return sorted(
         rows,
         key=lambda r: (
@@ -1283,6 +1291,78 @@ def build_mon_day_rows(
             r[2],
         ),
     )
+
+def build_campaign_period_rows(act_id, token, period_ranges):
+    """Aggregate each active CORE-L Leadads campaign across month boundaries.
+
+    Activity is determined from daily impressions or spend, within the same
+    3-month window as campaign_day. A campaign gets exactly one row.
+    """
+    active_campaigns = {}
+    for month_range in period_ranges:
+        print(f"[mon_day] Detecting Leadads activity: {month_range['label']}")
+        daily_rows = fetch_meta_insights(
+            act_id=act_id,
+            token=token,
+            since=month_range["since"],
+            until=month_range["until"],
+            level="campaign",
+            fields=["campaign_id", "campaign_name", "impressions", "spend"],
+            filtering=[{
+                "field": "campaign.name", "operator": "CONTAIN", "value": "Leadads"
+            }],
+            time_increment=1,
+        )
+        for item in daily_rows:
+            name = str(item.get("campaign_name", ""))
+            if "Camper(CORE-L)" not in name or "Leadads" not in name:
+                continue
+            if to_int(item.get("impressions")) <= 0 and to_float(item.get("spend")) <= 0:
+                continue
+            campaign_id = str(item.get("campaign_id", ""))
+            day_text = item.get("date_start")
+            if not campaign_id or not day_text:
+                continue
+            day = date.fromisoformat(day_text)
+            if campaign_id not in active_campaigns:
+                active_campaigns[campaign_id] = {
+                    "first": day, "last": day, "name": name
+                }
+            else:
+                entry = active_campaigns[campaign_id]
+                entry["first"] = min(entry["first"], day)
+                entry["last"] = max(entry["last"], day)
+                entry["name"] = name
+
+    result = []
+    for campaign_id, entry in sorted(active_campaigns.items(), key=lambda x: (x[1]["first"], x[0])):
+        since, until = entry["first"], entry["last"]
+        print(f"[mon_day] Fetching campaign_period: {entry['name']} / {since} to {until}")
+        campaign_filter = [{
+            "field": "campaign.id", "operator": "IN", "value": [campaign_id]
+        }]
+        period_rows = fetch_meta_insights(
+            act_id=act_id, token=token, since=since, until=until,
+            level="campaign",
+            fields=["campaign_id", "campaign_name", "reach", "actions", "action_values"],
+            filtering=campaign_filter,
+            action_attribution_windows=ATTRIBUTION_WINDOWS,
+        )
+        purchase_lookup = fetch_purchase_sales_lookup(
+            act_id, token, since, until, "campaign", filtering=campaign_filter
+        )
+        for item in period_rows:
+            if str(item.get("campaign_id", "")) != campaign_id:
+                continue
+            result.append([
+                "campaign_period", to_sheets_date_serial(since),
+                item.get("campaign_name", entry["name"]),
+                to_int(item.get("reach")),
+                *lookup_purchase_sales(purchase_lookup, item, "campaign"),
+                *attribution_metric_values(extract_attribution_metrics(item)),
+            ])
+    return result
+
 
 def empty_attr_metrics():
     return {
