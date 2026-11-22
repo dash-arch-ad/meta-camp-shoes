@@ -106,11 +106,11 @@ POST_SHARE_CANDIDATES = [
 def main():
     with report_step("Configuration"):
         resolved = resolve_config(load_secret())
-        validate_config(resolved)
         act_id = normalize_meta_act_id(resolved["meta"]["account_id"])
         token = resolved["meta"]["token"]
         targets = list(dict.fromkeys(resolved["sheet"]["spreadsheet_ids"]))
 
+    print(f"Loaded {resolved['format']} APP_SECRET_JSON settings.", flush=True)
     print(f"Opening Google Sheets destinations: {len(targets)}.", flush=True)
     books = connect_spreadsheets(targets, resolved["sheet"]["google_service_account"])
     with ExitStack() as locks:
@@ -160,85 +160,69 @@ def load_secret():
     return config
 
 
+def config_object(value, label):
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ExportError(f"{label} must contain a JSON object.")
+    return value
+
+
 def resolve_config(config):
-    meta = config.get(
-        "meta",
-        {},
-    )
-    sheets = config.get(
-        "sheets",
-        {},
-    )
-    gcp = config.get(
-        "gcp_service_account"
-    )
+    meta = config_object(config.get("meta"), "meta")
+    sheets = config_object(config.get("sheets"), "sheets")
 
-    spreadsheet_ids = sheets.get(
-        "spreadsheet_id"
-    )
+    # Select one complete credential set so an incomplete modern configuration
+    # cannot pair its Meta account with a destination from the legacy format.
+    has_nested_config = any((
+        "token" in meta,
+        "account_id" in meta,
+        "spreadsheet_id" in sheets,
+        "gcp_service_account" in config,
+    ))
+    if has_nested_config:
+        token = meta.get("token")
+        account_id = meta.get("account_id")
+        spreadsheet_ids = sheets.get("spreadsheet_id")
+        credentials = config.get("gcp_service_account")
+        labels = ("meta.token", "meta.account_id", "sheets.spreadsheet_id", "gcp_service_account")
+        config_format = "nested"
+    else:
+        token = config.get("m_token")
+        account_id = config.get("m_act_id")
+        spreadsheet_ids = config.get("s_id")
+        credentials = config.get("g_creds")
+        labels = ("m_token", "m_act_id", "s_id", "g_creds")
+        config_format = "flat"
 
-    if isinstance(
-        spreadsheet_ids,
-        str,
-    ):
-        spreadsheet_ids = [
-            spreadsheet_ids
-        ]
-
-    elif not isinstance(
-        spreadsheet_ids,
-        list,
-    ):
-        spreadsheet_ids = []
-
-    spreadsheet_ids = [
-        str(x).strip()
-        for x in spreadsheet_ids
-        if str(x).strip()
-    ]
-
-    return {
-        "meta": {
-            "token": meta.get(
-                "token"
-            ),
-            "account_id": meta.get(
-                "account_id"
-            ),
-        },
-        "sheet": {
-            "spreadsheet_ids":
-                spreadsheet_ids,
-            "google_service_account":
-                normalize_google_service_account(
-                    gcp
-                ),
-        },
-    }
-
-
-def validate_config(resolved):
-    required = {
-        "meta.token":
-            resolved["meta"]["token"],
-        "meta.account_id":
-            resolved["meta"]["account_id"],
-        "sheets.spreadsheet_id":
-            resolved["sheet"]["spreadsheet_ids"],
-        "gcp_service_account":
-            resolved["sheet"]["google_service_account"],
-    }
-
-    missing = [
-        k
-        for k, v in required.items()
-        if not v
-    ]
-
+    missing = [label for label, value in zip(labels, (token, account_id, spreadsheet_ids, credentials))
+               if value is None or value in ("", [], {})]
     if missing:
-        raise ExportError("Missing required config keys: " + ", ".join(missing))
-    if not isinstance(resolved["meta"]["token"], str) or not resolved["meta"]["token"].strip():
-        raise ExportError("meta.token must be a nonempty string.")
+        if not has_nested_config and not any(key in config for key in labels):
+            raise ExportError("APP_SECRET_JSON contains neither the nested report settings "
+                              "nor the flat keys m_token, m_act_id, s_id, g_creds.")
+        raise ExportError("Missing required config keys: " + ", ".join(missing) + ".")
+    if not isinstance(token, str) or not token.strip():
+        raise ExportError(f"{labels[0]} must be a nonempty string.")
+
+    if isinstance(spreadsheet_ids, str):
+        spreadsheet_ids = [spreadsheet_ids]
+    if not isinstance(spreadsheet_ids, list) or any(
+        not isinstance(value, str) or not value.strip() for value in spreadsheet_ids
+    ):
+        raise ExportError(f"{labels[2]} must contain a spreadsheet ID or a list of spreadsheet IDs.")
+
+    credentials = config_object(credentials, labels[3])
+    if "private_key" in credentials and not isinstance(credentials["private_key"], str):
+        raise ExportError(f"{labels[3]}.private_key must be a string.")
+    return {
+        "format": config_format,
+        "meta": {"token": token, "account_id": account_id},
+        "sheet": {
+            "spreadsheet_ids": [value.strip() for value in spreadsheet_ids],
+            "google_service_account": normalize_google_service_account(credentials),
+        },
+    }
 
 
 def normalize_google_service_account(
@@ -1602,7 +1586,7 @@ def connect_spreadsheets(
         creds = ServiceAccountCredentials.from_json_keyfile_dict(google_creds_dict, scope)
         client = gspread.authorize(creds)
     except Exception:
-        raise ExportError("Google service account credentials could not be loaded (gcp_service_account).") from None
+        raise ExportError("Google service account credentials could not be loaded.") from None
 
     books = []
     for index, sheet_id in enumerate(sheet_ids, start=1):
