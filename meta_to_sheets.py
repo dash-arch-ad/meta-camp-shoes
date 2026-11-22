@@ -1,6 +1,13 @@
 import os
 import json
 import time
+import logging
+import math
+import re
+import sys
+import uuid
+from contextlib import ExitStack, contextmanager
+from urllib.parse import parse_qs, urlsplit
 import requests
 import gspread
 from zoneinfo import ZoneInfo
@@ -11,7 +18,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # Settings
 # =========================================================
 
-META_API_VERSION = "v25.0"
+META_API_VERSION = "v27.0"
 JST = ZoneInfo("Asia/Tokyo")
 
 SHEET_MON_DAY = "mon_day"
@@ -94,148 +101,35 @@ POST_SHARE_CANDIDATES = [
 # =========================================================
 
 def main():
-    print("=== Start Meta 4-sheet export ===")
-
-    config = load_secret()
-    mask_sensitive_values(config)
-
-    resolved = resolve_config(config)
+    resolved = resolve_config(load_secret())
     validate_config(resolved)
-
-    act_id = normalize_meta_act_id(
-        resolved["meta"]["account_id"]
-    )
+    act_id = normalize_meta_act_id(resolved["meta"]["account_id"])
     token = resolved["meta"]["token"]
+    targets = list(dict.fromkeys(resolved["sheet"]["spreadsheet_ids"]))
+    books = connect_spreadsheets(targets, resolved["sheet"]["google_service_account"])
+    with ExitStack() as locks:
+        owners = {index: locks.enter_context(export_lock(books[index]))
+                  for index in sorted(range(len(books)), key=targets.__getitem__)}
+        months = get_month_ranges(GITREPORT1_MONTHS)
+        recent = get_month_ranges(GITREPORT2_MONTHS)
+        reports = [
+            (SHEET_MON_DAY, MON_DAY_HEADER, build_mon_day_rows(act_id, token, months, recent)),
+            (SHEET_AD, AD_HEADER, build_ad_rows(act_id, token, recent)),
+            (SHEET_AUDIENCE, AUDIENCE_HEADER, build_audience_rows(act_id, token, recent)),
+            (SHEET_AUDIENCE_DETAIL, AUDIENCE_DETAIL_HEADER, build_audience_detail_rows(act_id, token, recent)),
+            (SHEET_SEGMENTS, SEGMENTS_HEADER, build_segments_rows(act_id, token, recent)),
+        ]
+        plans = [publication_requests(book, owners[i], reports) for i, book in enumerate(books)]
+        for i, (book, plan) in enumerate(zip(books, plans)):
+            try:
+                publish(book, owners[i], plan)
+            except ExportError as error:
+                print(f"Destination {i + 1}: {error}", file=sys.stderr)
+                print(f"Remaining destinations not attempted: {len(books) - i - 1}", file=sys.stderr)
+                raise
+            print(f"Destination {i + 1}: published all five tabs.")
+    print("All exports completed.")
 
-    ranges_13m = get_month_ranges(GITREPORT1_MONTHS)
-    ranges_3m = get_month_ranges(GITREPORT2_MONTHS)
-
-    print("mon_day monthly ranges:", format_ranges(ranges_13m))
-    print("mon_day daily ranges:", format_ranges(ranges_3m))
-    print("ad ranges:", format_ranges(ranges_3m))
-    print("audience ranges:", format_ranges(ranges_3m))
-    print("audience(detail) ranges:", format_ranges(ranges_3m))
-    print("segments ranges:", format_ranges(ranges_3m))
-
-    spreadsheets = connect_spreadsheets(
-        sheet_ids=resolved["sheet"]["spreadsheet_ids"],
-        google_creds_dict=resolved["sheet"]["google_service_account"],
-    )
-
-    failures = []
-
-    run_export(
-        "mon_day",
-        lambda: build_mon_day_rows(
-            act_id=act_id,
-            token=token,
-            monthly_ranges=ranges_13m,
-            daily_ranges=ranges_3m,
-        ),
-        lambda rows: write_all(spreadsheets, write_mon_day, rows),
-        failures,
-    )
-
-    run_export(
-        "ad",
-        lambda: build_ad_rows(
-            act_id=act_id,
-            token=token,
-            month_ranges=ranges_3m,
-        ),
-        lambda rows: write_all(spreadsheets, write_ad, rows),
-        failures,
-    )
-
-    run_export(
-        "audience",
-        lambda: build_audience_rows(
-            act_id=act_id,
-            token=token,
-            month_ranges=ranges_3m,
-        ),
-        lambda rows: write_all(spreadsheets, write_audience, rows),
-        failures,
-    )
-
-    run_export(
-        "audience(detail)",
-        lambda: build_audience_detail_rows(
-            act_id=act_id,
-            token=token,
-            month_ranges=ranges_3m,
-        ),
-        lambda rows: write_all(spreadsheets, write_audience_detail, rows),
-        failures,
-    )
-
-    run_export(
-        "segments",
-        lambda: build_segments_rows(
-            act_id=act_id,
-            token=token,
-            month_ranges=ranges_3m,
-        ),
-        lambda rows: write_all(spreadsheets, write_segments, rows),
-        failures,
-    )
-
-    if failures:
-        summary = " | ".join(
-            f"{name}: {repr(err)}"
-            for name, err in failures
-        )
-        raise RuntimeError(
-            f"One or more sheet exports failed: {summary}"
-        )
-
-    print("=== All exports completed ===")
-
-def run_export(
-    name,
-    build_func,
-    write_func,
-    failures,
-):
-    print(f"\n=== Start {name} ===")
-
-    try:
-        rows = build_func()
-        print(
-            f"{name} rows built: {len(rows)}"
-        )
-
-        write_func(rows)
-
-        print(
-            f"=== Completed {name} ==="
-        )
-
-    except Exception as e:
-        failures.append(
-            (name, e)
-        )
-        print(
-            f"=== FAILED {name}: "
-            f"{repr(e)} ==="
-        )
-
-
-def write_all(
-    spreadsheets,
-    writer,
-    rows,
-):
-    for spreadsheet in spreadsheets:
-        writer(
-            spreadsheet,
-            rows,
-        )
-
-
-# =========================================================
-# Secret / Config
-# =========================================================
 
 def load_secret():
     raw = os.environ.get(
@@ -247,36 +141,7 @@ def load_secret():
             "APP_SECRET_JSON is not set"
         )
 
-    try:
-        return json.loads(raw)
-
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"APP_SECRET_JSON is invalid JSON: {e}"
-        ) from e
-
-
-def mask_sensitive_values(config):
-    meta = config.get(
-        "meta",
-        {},
-    )
-
-    for value in [
-        meta.get("token"),
-        meta.get("account_id"),
-    ]:
-        if not value:
-            continue
-
-        value = str(
-            value
-        ).strip()
-
-        if value and "\n" not in value:
-            print(
-                f"::add-mask::{value}"
-            )
+    return json.loads(raw)
 
 
 def resolve_config(config):
@@ -398,6 +263,8 @@ def normalize_meta_act_id(
         .strip()
     )
 
+    if not re.fullmatch(r"[0-9]+", cleaned):
+        raise ExportError("Invalid Meta account ID.")
     return f"act_{cleaned}"
 
 
@@ -570,120 +437,91 @@ def format_ranges(
 # Meta API
 # =========================================================
 
-def meta_get(
-    url,
-    params=None,
-):
-    last_error = None
+class ExportError(Exception):
+    """Only fixed labels and validated numeric diagnostics may be displayed."""
 
-    for attempt in range(
-        1,
-        MAX_RETRIES + 1,
-    ):
+
+class UnsupportedBreakdown(ExportError):
+    pass
+
+
+def meta_get(url, params, token, allow_fallback):
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = requests.get(
-                url,
-                params=params,
-                timeout=REQUEST_TIMEOUT,
-            )
-
+            response = requests.get(url, params=params, headers={"Authorization": f"Bearer {token}"},
+                                    timeout=REQUEST_TIMEOUT, allow_redirects=False)
+        except requests.RequestException:
+            problem = "Meta API connection failed."
+            retryable = True
+        else:
+            status = response.status_code
             try:
                 payload = response.json()
-            except Exception:
+            except ValueError:
                 payload = None
+            if 200 <= status < 300 and isinstance(payload, dict) and "error" not in payload:
+                return payload
+            error = payload.get("error") if isinstance(payload, dict) else None
+            error = error if isinstance(error, dict) else {}
+            code = error.get("code") if type(error.get("code")) is int else None
+            details = [f"HTTP {status}"]
+            for key in ("code", "error_subcode"):
+                if type(error.get(key)) is int:
+                    details.append(f"{key}={error[key]}")
+            problem = "Meta API failed (" + ", ".join(details) + ")."
+            if allow_fallback and status == 400 and code == 100:
+                # Match only parameter diagnostics, never emit the remote message.
+                message = error.get("message")
+                if isinstance(message, str) and "breakdown" in message.lower():
+                    raise UnsupportedBreakdown(problem)
+            retryable = (status >= 500 or status == 429 or code in (1, 2, 4, 17, 32, 613))
+            if 300 <= status < 400:
+                retryable = False
+        if not retryable or attempt == MAX_RETRIES:
+            raise ExportError(problem) from None
+        print(f"Meta retry {attempt}/{MAX_RETRIES}.")
+        time.sleep(2 ** (attempt - 1))
 
-            if (
-                response.ok
-                and not (
-                    isinstance(
-                        payload,
-                        dict,
-                    )
-                    and payload.get(
-                        "error"
-                    )
-                )
-            ):
-                return response
 
-            body = truncate_text(
-                json.dumps(
-                    payload,
-                    ensure_ascii=False,
-                )
-                if payload is not None
-                else response.text
-            )
+def require_number(value):
+    if type(value) not in (str, float, int):
+        raise ExportError("Meta API returned an invalid numeric metric.")
+    try:
+        valid = math.isfinite(float(value))
+    except (ValueError, OverflowError):
+        valid = False
+    if not valid:
+        raise ExportError("Meta API returned an invalid numeric metric.")
 
-            last_error = RuntimeError(
-                "Meta API failed. "
-                f"status={response.status_code}, "
-                f"body={body}"
-            )
 
-            retryable = (
-                response.status_code
-                >= 500
-            )
-
-            if (
-                isinstance(
-                    payload,
-                    dict,
-                )
-                and payload.get(
-                    "error"
-                )
-            ):
-                code = (
-                    payload["error"]
-                    .get("code")
-                )
-
-                if code in (
-                    1,
-                    2,
-                    4,
-                    17,
-                    32,
-                    613,
-                ):
-                    retryable = True
-
-            if (
-                not retryable
-                or attempt
-                == MAX_RETRIES
-            ):
-                raise last_error
-
-        except requests.RequestException as e:
-            last_error = e
-
-            if attempt == MAX_RETRIES:
-                raise RuntimeError(
-                    "Meta request error: "
-                    f"{repr(e)}"
-                ) from e
-
-        wait_sec = (
-            2 ** (attempt - 1)
-        )
-
-        print(
-            "Meta retry "
-            f"{attempt}/{MAX_RETRIES}, "
-            f"sleep={wait_sec}s"
-        )
-
-        time.sleep(
-            wait_sec
-        )
-
-    raise RuntimeError(
-        "Meta API request failed: "
-        f"{last_error}"
-    )
+def validate_row(row, fields, breakdowns, daily, since, until):
+    if not isinstance(row, dict):
+        raise ExportError("Meta API returned an invalid row.")
+    for field in fields:
+        if field in ("actions", "action_values"):
+            actions = row.get(field, [])
+            if not isinstance(actions, list):
+                raise ExportError("Meta API returned invalid action metrics.")
+            for action in actions:
+                if not isinstance(action, dict) or not isinstance(action.get("action_type"), str) or not action["action_type"]:
+                    raise ExportError("Meta API returned an invalid action.")
+                for key in ("value", *ATTRIBUTION_WINDOWS):
+                    if key in action:
+                        require_number(action[key])
+        elif field.endswith(("_id", "_name")):
+            if not isinstance(row.get(field), str) or not row[field]:
+                raise ExportError("Meta API returned an incomplete identity.")
+        elif field != "inline_link_clicks" or field in row:
+            require_number(row.get(field))
+    for name in breakdowns or []:
+        if not isinstance(row.get(name), str) or not row[name]:
+            raise ExportError("Meta API returned an incomplete breakdown.")
+    if daily:
+        text = row.get("date_start")
+        if not isinstance(text, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", text):
+            raise ExportError("Meta API returned an invalid reporting date.")
+        if not since <= date.fromisoformat(text) <= until:
+            raise ExportError("Meta API returned an out-of-range date.")
 
 
 def fetch_meta_insights(
@@ -705,8 +543,6 @@ def fetch_meta_insights(
     )
 
     params = {
-        "access_token":
-            token,
         "level":
             level,
         "time_range":
@@ -751,83 +587,49 @@ def fetch_meta_insights(
             ensure_ascii=False,
         )
 
-    context = {
-        "level":
-            level,
-        "since":
-            since.strftime(
-                "%Y-%m-%d"
-            ),
-        "until":
-            until.strftime(
-                "%Y-%m-%d"
-            ),
-        "breakdowns":
-            breakdowns or [],
-        "action_attribution_windows":
-            action_attribution_windows or [],
-        "filtering":
-            filtering or [],
-        "time_increment": time_increment,
-        "fields":
-            fields,
-    }
-
-    print(
-        "[META REQUEST]",
-        json.dumps(
-            context,
-            ensure_ascii=False,
-        ),
-    )
-
     rows = []
-
+    seen = set()
     while True:
-        try:
-            response = meta_get(
-                url,
-                params=params,
-            )
-
-        except RuntimeError as e:
-            raise RuntimeError(
-                "Meta Insights request failed. "
-                "context="
-                f"{json.dumps(context, ensure_ascii=False)}; "
-                f"error={e}"
-            ) from e
-
-        payload = response.json()
-
-        rows.extend(
-            payload.get(
-                "data",
-                [],
-            )
-        )
-
-        next_url = (
-            payload
-            .get(
-                "paging",
-                {},
-            )
-            .get("next")
-        )
-
-        if not next_url:
-            break
-
-        url = next_url
-        params = None
-
-    return rows
+        fallback = not seen and breakdowns and len(breakdowns) == 1 and breakdowns[0] in AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES
+        payload = meta_get(url, params, token, fallback)
+        if not isinstance(payload.get("data"), list):
+            raise ExportError("Meta API returned invalid data.")
+        for row in payload["data"]:
+            validate_row(row, fields, breakdowns, time_increment == 1, since, until)
+        rows.extend(payload["data"])
+        paging = payload.get("paging", {})
+        if not isinstance(paging, dict):
+            raise ExportError("Meta API returned invalid paging.")
+        if "next" not in paging:
+            return rows
+        cursor = next_cursor(url, paging, params)
+        if cursor in seen or token in cursor:
+            raise ExportError("Meta API returned an invalid or repeated cursor.")
+        seen.add(cursor)
+        params["after"] = cursor
 
 
-# =========================================================
-# Common action extractors
-# =========================================================
+def next_cursor(endpoint, paging, params):
+    if not isinstance(paging["next"], str):
+        raise ExportError("Meta API returned invalid paging.")
+    target = urlsplit(paging["next"])
+    expected = urlsplit(endpoint)
+    if (target.scheme, target.netloc, target.path) != (expected.scheme, expected.netloc, expected.path):
+        raise ExportError("Meta API returned an unexpected paging destination.")
+    query = parse_qs(target.query, keep_blank_values=True)
+    if target.fragment or set(query) - (set(params) | {"after", "access_token"}):
+        raise ExportError("Meta API returned unsupported paging.")
+    cursors = paging.get("cursors", {})
+    if not isinstance(cursors, dict):
+        raise ExportError("Meta API returned invalid cursors.")
+    candidates = query.get("after", [])
+    if len(candidates) > 1:
+        raise ExportError("Meta API returned ambiguous paging.")
+    cursor = cursors.get("after", candidates[0] if candidates else None)
+    if not isinstance(cursor, str) or not cursor or (candidates and candidates != [cursor]):
+        raise ExportError("Meta API returned unsupported paging.")
+    return cursor
+
 
 def action_map(
     action_list,
@@ -1372,7 +1174,7 @@ def build_campaign_period_rows(act_id, token, leadads_months):
         one_campaign_filter = [{
             "field": "campaign.id", "operator": "IN", "value": [cid]
         }]
-        print(f"[mon_day] Fetching campaign_period: {name} / {since} to {until}")
+        print(f"[mon_day] Fetching campaign_period: {since} to {until}")
         # Fetch the whole period in one request: reach is deduplicated by Meta,
         # not added up from daily or monthly reach values.
         period_rows = fetch_meta_insights(
@@ -1685,49 +1487,15 @@ def build_segments_rows(
                     ],
                 )
 
-            except RuntimeError as e:
-                print(
-                    "[segments] "
-                    f"breakdown='{breakdown}' "
-                    f"API error: {e}"
-                )
+            except UnsupportedBreakdown:
                 continue
+            # A validated empty page is a successful zero-row report.
+            chosen_breakdown = breakdown
+            segment_rows = rows_try
+            break
+        if chosen_breakdown is None:
+            raise ExportError("Meta API rejected all audience segment breakdowns.")
 
-            if has_real_breakdown(
-                rows_try,
-                breakdown,
-            ):
-                chosen_breakdown = (
-                    breakdown
-                )
-                segment_rows = (
-                    rows_try
-                )
-                break
-
-            print(
-                "[segments] "
-                f"breakdown='{breakdown}' "
-                "returned no usable values"
-            )
-
-        if not chosen_breakdown:
-            raise RuntimeError(
-                "segments failed: none of "
-                "the Audience Segment breakdown "
-                "candidates returned usable data. "
-                f"month={month_range['label']}; "
-                "candidates="
-                f"{AUDIENCE_SEGMENT_BREAKDOWN_CANDIDATES}"
-            )
-
-        print(
-            "[segments] "
-            f"{month_range['label']} "
-            f"using breakdown="
-            f"'{chosen_breakdown}', "
-            f"rows={len(segment_rows)}"
-        )
 
         for item in segment_rows:
             # 既存auseと同じ:
@@ -1778,32 +1546,6 @@ def build_segments_rows(
     )
 
 
-def has_real_breakdown(
-    rows,
-    breakdown_key,
-):
-    if not rows:
-        return False
-
-    for row in rows:
-        if (
-            breakdown_key in row
-            and row.get(
-                breakdown_key
-            ) not in (
-                None,
-                "",
-            )
-        ):
-            return True
-
-    return False
-
-
-# =========================================================
-# Google Sheets
-# =========================================================
-
 def connect_spreadsheets(
     sheet_ids,
     google_creds_dict,
@@ -1825,183 +1567,156 @@ def connect_spreadsheets(
         creds
     )
 
-    spreadsheets = []
-
-    for sheet_id in sheet_ids:
-        try:
-            spreadsheet = (
-                client.open_by_key(
-                    sheet_id
-                )
-            )
-
-            spreadsheets.append(
-                spreadsheet
-            )
-
-            print(
-                "Google Sheets connected: "
-                f"{sheet_id}"
-            )
-
-        except Exception as e:
-            raise RuntimeError(
-                "Google Sheets connection error: "
-                f"sheet_id={sheet_id}, "
-                f"{repr(e)}"
-            ) from e
-
-    return spreadsheets
-
-
-def get_or_create_worksheet(
-    spreadsheet,
-    sheet_name,
-    cols,
-):
-    try:
-        worksheet = (
-            spreadsheet.worksheet(
-                sheet_name
-            )
-        )
-
-    except gspread.WorksheetNotFound:
-        worksheet = (
-            spreadsheet.add_worksheet(
-                title=sheet_name,
-                rows=1000,
-                cols=cols,
-            )
-        )
-
-    # 既存シートの列数が足りない場合は拡張。
-    if worksheet.col_count < cols:
-        worksheet.resize(
-            cols=cols
-        )
-
-    return worksheet
-
-
-def write_sheet(
-    spreadsheet,
-    sheet_name,
-    header,
-    rows,
-):
-    worksheet = get_or_create_worksheet(
-        spreadsheet,
-        sheet_name,
-        cols=len(header),
-    )
-
-    worksheet.clear()
-
-    output = [
-        header
-    ] + rows
-
-    # 日付はシリアル値として数値で出力。
-    # 表示形式はスプレッドシート側の既存設定に任せる。
-    worksheet.update(
-        range_name="A1",
-        values=output,
-        raw=True,
-    )
-
-    print(
-        "Write success: "
-        f"spreadsheet={spreadsheet.id}, "
-        f"sheet={sheet_name}, "
-        f"rows={len(rows)}"
-    )
-
-
-def write_mon_day(
-    spreadsheet,
-    rows,
-):
-    header = [
-        "scope",
-        "date",
-        "campaign_name",
-        "reach",
-        "purchase",
-        "sales",
-        "cv_view_1d",
-        "cv_click_7d",
-        "cv_view1d_click7d",
-        "cv_incr",
-        "sale_view_1d",
-        "sales_click_7d",
-        "sales_view1d_click7d",
-        "sales_incr",
-    ]
-    write_sheet(spreadsheet, SHEET_MON_DAY, header, rows)
-
-
-def write_ad(
-    spreadsheet,
-    rows,
-):
-    header = [
-        "scope",
-        "month",
-        "campaign_name",
-        "adset_name",
-        "ad_name",
-        "purchase",
-        "sales",
-        "cv_view_1d",
-        "cv_click_7d",
-        "cv_view1d_click7d",
-        "cv_incr",
-        "sale_view_1d",
-        "sales_click_7d",
-        "sales_view1d_click7d",
-        "sales_incr",
-    ]
-    write_sheet(spreadsheet, SHEET_AD, header, rows)
+    return [client.open_by_key(sheet_id) for sheet_id in sheet_ids]
 
 
 ATTRIBUTION_HEADERS = [
     "cv_view_1d", "cv_click_7d", "cv_view1d_click7d", "cv_incr",
     "sale_view_1d", "sales_click_7d", "sales_view1d_click7d", "sales_incr",
 ]
+MON_DAY_HEADER = ["scope", "date", "campaign_name", "reach", "purchase", "sales"] + ATTRIBUTION_HEADERS
+AD_HEADER = ["scope", "month", "campaign_name", "adset_name", "ad_name", "purchase", "sales"] + ATTRIBUTION_HEADERS
+AUDIENCE_HEADER = ["scope", "month", "campaign_name", "audience", "purchase", "sales"] + ATTRIBUTION_HEADERS
+AUDIENCE_DETAIL_HEADER = [
+    "scope", "month", "campaign_name", "adset_name", "gender", "age", "platform",
+    "placement", "device_platform",
+] + DEFAULT_METRIC_NAMES + ATTRIBUTION_HEADERS
+SEGMENTS_HEADER = ["month", "campaign_name", "audience_segment", "impressions", "spend", "cv"]
+
+LOCK_NAME = "camp_shoes_export_lock_v1"
+LOCK_PREFIX = "_camp_shoes_export_"
+LEASE_SECONDS = 6 * 60 * 60
 
 
-def write_audience(spreadsheet, rows):
-    header = ["scope", "month", "campaign_name", "audience", "purchase", "sales"] + ATTRIBUTION_HEADERS
-    write_sheet(spreadsheet, SHEET_AUDIENCE, header, rows)
+def active_lock(book):
+    metadata = book.fetch_sheet_metadata(params={
+        "fields": "sheets(properties(sheetId,title,hidden)),namedRanges(namedRangeId,name,range(sheetId))"
+    })
+    for item in metadata.get("namedRanges", []):
+        if item["name"].casefold() != LOCK_NAME:
+            continue
+        guard_id = item["namedRangeId"]
+        sheet_id = item["range"]["sheetId"]
+        for sheet in metadata["sheets"]:
+            props = sheet["properties"]
+            if props["sheetId"] != sheet_id:
+                continue
+            title = props["title"]
+            match = re.fullmatch(LOCK_PREFIX + r"([0-9]+)_([a-f0-9]{32})", title)
+            if match and props.get("hidden") and guard_id == "camp_shoes_" + match[2]:
+                return (guard_id, sheet_id, title, int(match[1]))
+        raise ExportError("Sheets lock metadata is invalid.")
+    return None
 
 
-def write_audience_detail(spreadsheet, rows):
-    header = [
-        "scope", "month", "campaign_name", "adset_name", "gender", "age",
-        "platform", "placement", "device_platform",
-    ] + DEFAULT_METRIC_NAMES + ATTRIBUTION_HEADERS
-    write_sheet(spreadsheet, SHEET_AUDIENCE_DETAIL, header, rows)
-
-
-def write_segments(
-    spreadsheet,
-    rows,
-):
-    header = [
-        "month",
-        "campaign_name",
-        "audience_segment",
-        "impressions",
-        "spend",
-        "cv",
+def remove_lock(owner):
+    # Both operations are atomic. A retired owner cannot delete a successor's tab.
+    return [
+        {"deleteNamedRange": {"namedRangeId": owner[0]}},
+        {"deleteSheet": {"sheetId": owner[1]}},
     ]
-    write_sheet(spreadsheet, SHEET_SEGMENTS, header, rows)
 
 
-# =========================================================
-# Utils
-# =========================================================
+@contextmanager
+def export_lock(book):
+    previous = active_lock(book)
+    now = int(time.time())
+    if previous and previous[3] > now:
+        raise ExportError("Another export holds the Sheets lock.")
+    nonce = uuid.uuid4().hex
+    sheet_id = 1 + uuid.uuid4().int % 2147483646
+    expires = now + LEASE_SECONDS
+    title = f"{LOCK_PREFIX}{expires}_{nonce}"
+    guard_id = "camp_shoes_" + nonce
+    owner = (guard_id, sheet_id, title, expires)
+    commands = remove_lock(previous) if previous else []
+    commands.extend([
+        {"addSheet": {"properties": {
+            "sheetId": sheet_id, "title": title, "hidden": True,
+            "gridProperties": {"rowCount": 1, "columnCount": 1},
+        }}},
+        {"addNamedRange": {"namedRange": {
+            "namedRangeId": guard_id, "name": LOCK_NAME,
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "endRowIndex": 1,
+                      "startColumnIndex": 0, "endColumnIndex": 1},
+        }}},
+    ])
+    try:
+        book.batch_update({"requests": commands})
+    except Exception:
+        if active_lock(book) != owner:
+            raise ExportError("Sheets lock acquisition failed or another export is running.") from None
+    try:
+        yield owner
+    finally:
+        try:
+            book.batch_update({"requests": remove_lock(owner)})
+        except Exception:
+            if active_lock(book) == owner:
+                print("Sheets lock release unconfirmed. The lease expires automatically.", file=sys.stderr)
+
+
+def raw_cell(value):
+    if value == "":
+        return {}
+    if isinstance(value, str):
+        return {"userEnteredValue": {"stringValue": value}}
+    return {"userEnteredValue": {"numberValue": value}}
+
+
+def publication_requests(book, owner, reports):
+    metadata = book.fetch_sheet_metadata(params={"fields": "sheets(properties(sheetId,title,gridProperties))"})
+    sheets = {item["properties"]["title"]: item["properties"] for item in metadata["sheets"]}
+    ids = {props["sheetId"] for props in sheets.values()}
+    # Validate the unique lease in the very same atomic batch as all five writes.
+    commands = [{"updateNamedRange": {"namedRange": {"namedRangeId": owner[0], "name": LOCK_NAME},
+                                      "fields": "name"}}]
+    for title, header, rows in reports:
+        width, height = len(header), 1 + len(rows)
+        props = sheets.get(title)
+        if props is None:
+            sheet_id = 1 + uuid.uuid4().int % 2147483646
+            while sheet_id in ids:
+                sheet_id = 1 + uuid.uuid4().int % 2147483646
+            ids.add(sheet_id)
+            commands.append({"addSheet": {"properties": {
+                "sheetId": sheet_id, "title": title,
+                "gridProperties": {"columnCount": width, "rowCount": max(1000, height)},
+            }}})
+        else:
+            sheet_id = props["sheetId"]
+            grid = props["gridProperties"]
+            for dimension, need, current in (("ROWS", height, grid["rowCount"]),
+                                              ("COLUMNS", width, grid["columnCount"])):
+                if need > current:
+                    commands.append({"appendDimension": {"sheetId": sheet_id, "dimension": dimension,
+                                                         "length": need - current}})
+        # An open-ended row range clears previous values below the new output.
+        # Updating userEnteredValue alone preserves formatting and the other columns.
+        commands.append({"updateCells": {
+            "range": {"sheetId": sheet_id, "startRowIndex": 0, "startColumnIndex": 0,
+                      "endColumnIndex": width},
+            "fields": "userEnteredValue",
+            "rows": [{"values": [raw_cell(value) for value in row]} for row in [header, *rows]],
+        }})
+    commands.append({"updateCells": {
+        "start": {"sheetId": owner[1], "rowIndex": 0, "columnIndex": 0},
+        "fields": "userEnteredValue", "rows": [{"values": [raw_cell("PUBLISHED")]}],
+    }})
+    return commands
+
+
+def publish(book, owner, commands):
+    try:
+        book.batch_update({"requests": commands})
+    except Exception:
+        try:
+            result = book.values_get(f"'{owner[2]}'!A1")
+        except Exception:
+            raise ExportError("Publication outcome unknown.") from None
+        if result.get("values") != [["PUBLISHED"]]:
+            raise ExportError("Publication not confirmed.") from None
+
 
 def to_float(
     value,
@@ -2033,22 +1748,11 @@ def to_int(
         return 0
 
 
-def truncate_text(
-    value,
-    limit=1400,
-):
-    value = str(
-        value
-    )
-
-    if len(value) <= limit:
-        return value
-
-    return (
-        value[:limit]
-        + "...(truncated)"
-    )
-
-
 if __name__ == "__main__":
-    main()
+    logging.disable(logging.CRITICAL)
+    try:
+        main()
+    except ExportError as error:
+        sys.exit(str(error))
+    except Exception:
+        sys.exit("Export failed. Check configuration, response format or Sheets access.")
