@@ -12,6 +12,9 @@ import requests
 import gspread
 from zoneinfo import ZoneInfo
 from datetime import datetime, date, timedelta
+from google.auth.exceptions import RefreshError
+from gspread.exceptions import APIError, SpreadsheetNotFound
+from oauth2client.client import AccessTokenRefreshError
 from oauth2client.service_account import ServiceAccountCredentials
 
 # =========================================================
@@ -101,15 +104,22 @@ POST_SHARE_CANDIDATES = [
 # =========================================================
 
 def main():
-    resolved = resolve_config(load_secret())
-    validate_config(resolved)
-    act_id = normalize_meta_act_id(resolved["meta"]["account_id"])
-    token = resolved["meta"]["token"]
-    targets = list(dict.fromkeys(resolved["sheet"]["spreadsheet_ids"]))
+    with report_step("Configuration"):
+        resolved = resolve_config(load_secret())
+        validate_config(resolved)
+        act_id = normalize_meta_act_id(resolved["meta"]["account_id"])
+        token = resolved["meta"]["token"]
+        targets = list(dict.fromkeys(resolved["sheet"]["spreadsheet_ids"]))
+
+    print(f"Opening Google Sheets destinations: {len(targets)}.", flush=True)
     books = connect_spreadsheets(targets, resolved["sheet"]["google_service_account"])
     with ExitStack() as locks:
-        owners = {index: locks.enter_context(export_lock(books[index]))
-                  for index in sorted(range(len(books)), key=targets.__getitem__)}
+        owners = {}
+        # Acquire shared locks in a consistent order, regardless of the configured output order.
+        for index in sorted(range(len(books)), key=targets.__getitem__):
+            with report_step(f"Google Sheets lock, destination {index + 1}"):
+                owners[index] = locks.enter_context(export_lock(books[index]))
+        print(f"Reading Meta Ads Insights ({META_API_VERSION}).", flush=True)
         months = get_month_ranges(GITREPORT1_MONTHS)
         recent = get_month_ranges(GITREPORT2_MONTHS)
         reports = [
@@ -119,7 +129,10 @@ def main():
             (SHEET_AUDIENCE_DETAIL, AUDIENCE_DETAIL_HEADER, build_audience_detail_rows(act_id, token, recent)),
             (SHEET_SEGMENTS, SEGMENTS_HEADER, build_segments_rows(act_id, token, recent)),
         ]
-        plans = [publication_requests(book, owners[i], reports) for i, book in enumerate(books)]
+        plans = []
+        for i, book in enumerate(books):
+            with report_step(f"Prepare Sheets update, destination {i + 1}"):
+                plans.append(publication_requests(book, owners[i], reports))
         for i, (book, plan) in enumerate(zip(books, plans)):
             try:
                 publish(book, owners[i], plan)
@@ -137,11 +150,14 @@ def load_secret():
     )
 
     if not raw:
-        raise RuntimeError(
-            "APP_SECRET_JSON is not set"
-        )
-
-    return json.loads(raw)
+        raise ExportError("APP_SECRET_JSON is not set.")
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError:
+        raise ExportError("APP_SECRET_JSON is invalid JSON.") from None
+    if not isinstance(config, dict):
+        raise ExportError("APP_SECRET_JSON must contain a JSON object.")
+    return config
 
 
 def resolve_config(config):
@@ -220,10 +236,9 @@ def validate_config(resolved):
     ]
 
     if missing:
-        raise RuntimeError(
-            "Missing required config keys: "
-            + ", ".join(missing)
-        )
+        raise ExportError("Missing required config keys: " + ", ".join(missing))
+    if not isinstance(resolved["meta"]["token"], str) or not resolved["meta"]["token"].strip():
+        raise ExportError("meta.token must be a nonempty string.")
 
 
 def normalize_google_service_account(
@@ -443,6 +458,34 @@ class ExportError(Exception):
 
 class UnsupportedBreakdown(ExportError):
     pass
+
+
+def sheets_error_detail(error):
+    if isinstance(error, (RefreshError, AccessTokenRefreshError)):
+        return "Google service account authentication failed"
+    if isinstance(error, SpreadsheetNotFound):
+        return "spreadsheet not found or inaccessible"
+    if isinstance(error, PermissionError):
+        return "spreadsheet access denied (HTTP 403)"
+    if isinstance(error, APIError):
+        status = getattr(error.response, "status_code", None)
+        if type(status) is int and 100 <= status <= 599:
+            return f"Google Sheets API rejected the request (HTTP {status})"
+    if isinstance(error, requests.Timeout):
+        return "request timed out"
+    if isinstance(error, requests.ConnectionError):
+        return "connection failed"
+    return "operation failed"
+
+
+@contextmanager
+def report_step(label):
+    try:
+        yield
+    except ExportError as error:
+        raise ExportError(f"{label}: {error}") from None
+    except Exception as error:
+        raise ExportError(f"{label}: {sheets_error_detail(error)}.") from None
 
 
 def meta_get(url, params, token, allow_fallback):
@@ -1555,19 +1598,17 @@ def connect_spreadsheets(
         "https://www.googleapis.com/auth/drive",
     ]
 
-    creds = (
-        ServiceAccountCredentials
-        .from_json_keyfile_dict(
-            google_creds_dict,
-            scope,
-        )
-    )
+    try:
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(google_creds_dict, scope)
+        client = gspread.authorize(creds)
+    except Exception:
+        raise ExportError("Google service account credentials could not be loaded (gcp_service_account).") from None
 
-    client = gspread.authorize(
-        creds
-    )
-
-    return [client.open_by_key(sheet_id) for sheet_id in sheet_ids]
+    books = []
+    for index, sheet_id in enumerate(sheet_ids, start=1):
+        with report_step(f"Open Google Sheets destination {index}"):
+            books.append(client.open_by_key(sheet_id))
+    return books
 
 
 ATTRIBUTION_HEADERS = [
@@ -1643,16 +1684,24 @@ def export_lock(book):
     ])
     try:
         book.batch_update({"requests": commands})
-    except Exception:
-        if active_lock(book) != owner:
-            raise ExportError("Sheets lock acquisition failed or another export is running.") from None
+    except Exception as error:
+        try:
+            confirmed = active_lock(book) == owner
+        except Exception:
+            confirmed = False
+        if not confirmed:
+            raise ExportError(f"Lock acquisition unconfirmed: {sheets_error_detail(error)}.") from None
     try:
         yield owner
     finally:
         try:
             book.batch_update({"requests": remove_lock(owner)})
         except Exception:
-            if active_lock(book) == owner:
+            try:
+                released = active_lock(book) != owner
+            except Exception:
+                released = False
+            if not released:
                 print("Sheets lock release unconfirmed. The lease expires automatically.", file=sys.stderr)
 
 
@@ -1709,13 +1758,14 @@ def publication_requests(book, owner, reports):
 def publish(book, owner, commands):
     try:
         book.batch_update({"requests": commands})
-    except Exception:
+    except Exception as error:
+        detail = sheets_error_detail(error)
         try:
             result = book.values_get(f"'{owner[2]}'!A1")
         except Exception:
-            raise ExportError("Publication outcome unknown.") from None
+            raise ExportError(f"Publication outcome unknown: {detail}.") from None
         if result.get("values") != [["PUBLISHED"]]:
-            raise ExportError("Publication not confirmed.") from None
+            raise ExportError(f"Publication not confirmed: {detail}.") from None
 
 
 def to_float(
@@ -1755,4 +1805,4 @@ if __name__ == "__main__":
     except ExportError as error:
         sys.exit(str(error))
     except Exception:
-        sys.exit("Export failed. Check configuration, response format or Sheets access.")
+        sys.exit("Export failed after the last logged step.")
